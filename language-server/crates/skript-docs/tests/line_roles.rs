@@ -162,3 +162,44 @@ fn glued_groups_reach_their_documentation() {
         assert!(hit.is_some(), "{line:?} did not classify");
     }
 }
+
+/// A condition must be reachable however the user spells its negation.
+///
+/// `(is|are)(n't| not)` writes the negation as two branches: `n't`, glued to the
+/// word before it, and ` not`, which carries a leading space. Collapsing that
+/// space away fused `is` + `not` into `isnot`, so `{_x} isn't set` found
+/// `Exists/Is Set` and `{_x} is not set` did not find it at all — the same
+/// condition, reachable only if you happened to use the contraction.
+///
+/// This asserts the entry is among the matches for both spellings. It does not
+/// assert it ranks *first*: `Comparison` publishes many patterns and outscores
+/// it on the spelled-out form, which is a separate question about specificity
+/// scoring rather than about whether the pattern matches at all.
+#[test]
+fn a_negation_is_reachable_either_way() {
+    let Some(catalog) = catalog() else {
+        eprintln!("skipped: vendor/docs.json not fetched");
+        return;
+    };
+
+    let reaches = |line: &str, wanted: &str| {
+        catalog.classify(line).into_iter().any(|(id, _)| {
+            catalog
+                .entry(id)
+                .is_some_and(|entry| entry.name.eq_ignore_ascii_case(wanted))
+        })
+    };
+
+    for line in ["{_x} isn't set", "{_x} is not set", "{_x} is set"] {
+        assert!(
+            reaches(line, "Exists/Is Set"),
+            "{line:?} never reaches Exists/Is Set"
+        );
+    }
+    for line in ["{_d} hasn't passed", "{_d} has not passed"] {
+        assert!(
+            reaches(line, "In The Past/Future"),
+            "{line:?} never reaches In The Past/Future"
+        );
+    }
+}

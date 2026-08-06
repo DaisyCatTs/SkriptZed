@@ -103,6 +103,10 @@ below is new.
   source records when something was removed.
 - `Skellett` and `SkStuff` have no syntax data in any public source. They behave
   like any other unknown addon: silent, never an error.
+- When several published syntaxes match one line, the most specific wins — but
+  "specific" is scored from the pattern's mandatory words, which occasionally
+  picks the wrong one. `{_x} is not set` is matched by both `Exists/Is Set` and
+  the general `Comparison`, and hover shows the latter.
 
 [Unreleased]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/DaisyCatTs/SkriptZed/releases/tag/v0.1.0

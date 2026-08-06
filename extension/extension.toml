@@ -17,7 +17,7 @@ snippets = ["./snippets/skript.json"]
 # split-out tree-sitter-skript repository.
 [grammars.skript]
 repository = "file:///C:/Users/Daisy/Desktop/ZedSkript"
-rev = "8fcedff796a4a9a8f29c3a45cd422ce94ce9621b"
+rev = "231f0d69f5ce16c3e3779edef47ddac077a25add"
 path = "tree-sitter-skript"
 
 [language_servers.skript-lsp]

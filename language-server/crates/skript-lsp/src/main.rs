@@ -491,7 +491,11 @@ impl LanguageServer for Backend {
         };
         let line = document.line(position.line);
         let code = line.trim().trim_end_matches(':');
-        let Some((id, _)) = catalog.classify_best(code) else {
+        // Same role filter as semantic tokens and diagnostics — hovering a line
+        // must never claim it is the "Creature/Entity/Player/…" expression just
+        // because that pattern is `[the] [event-]<.+>` and matches anything.
+        let role = skript_docs::LineRole::from_indent(line.len() - line.trim_start().len());
+        let Some((id, _)) = catalog.classify_line(code, role) else {
             return Ok(None);
         };
         let Some(mut text) = catalog.hover(id) else {
@@ -929,7 +933,7 @@ impl LanguageServer for Backend {
         let encoding = state.encoding;
         // Indexed once for the whole response rather than rescanned per token.
         let lines = convert::LineIndex::new(text);
-        let data = semantic::tokens(catalog, text, |line, byte| {
+        let data = semantic::tokens(catalog, text, document.symbols(), |line, byte| {
             lines.to_column(line, byte, encoding)
         });
 

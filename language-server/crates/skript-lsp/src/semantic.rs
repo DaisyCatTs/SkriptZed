@@ -15,6 +15,7 @@
 //! `extension/languages/skript/semantic_token_rules.json`.
 
 use skript_docs::{Catalog, Category};
+use skript_index::{FileSymbols, SymbolKind};
 use tower_lsp::lsp_types as lsp;
 
 /// The token types this server emits, in the order the LSP legend indexes them.
@@ -73,12 +74,24 @@ struct Token {
 pub fn tokens(
     catalog: &Catalog,
     text: &str,
+    symbols: &FileSymbols,
     mut to_column: impl FnMut(u32, u32) -> u32,
 ) -> Vec<lsp::SemanticToken> {
     let mut tokens = Vec::new();
+    // A `###` block's interior is prose. Classifying it would paint arbitrary
+    // English as syntax, and it is what `skript-format` and the indentation
+    // diagnostics already treat as verbatim — the three must agree.
+    let mut in_block_comment = false;
 
     for (number, raw) in text.lines().enumerate() {
         let line_number = number as u32;
+        if raw.trim() == "###" {
+            in_block_comment = !in_block_comment;
+            continue;
+        }
+        if in_block_comment {
+            continue;
+        }
         let Some(code) = executable_part(raw) else {
             continue;
         };
@@ -86,7 +99,19 @@ pub fn tokens(
         // Byte offset of `code` within `raw`, so spans line up with the file.
         let offset = raw.len() - raw.trim_start().len();
 
-        let Some((id, matched)) = catalog.classify_best(code.trim_end_matches(':')) else {
+        // A line's indentation decides which categories can explain it: an
+        // expression is only ever *part* of a line, and Skript's three
+        // catch-all expressions would otherwise claim every line in the file.
+        let role = skript_docs::LineRole::from_indent(offset);
+        let Some((id, matched)) = catalog.classify_line(code, role) else {
+            // A statement that is just a call — `giveKit(player)` — is real
+            // Skript, but its effect is registered internally and appears in no
+            // published pattern, so the catalog can never explain it. The index
+            // already found the call for go-to-definition; reusing that keeps
+            // colour, hover and navigation agreeing on what the line is.
+            if let Some(call) = call_statement(symbols, line_number) {
+                push_token(&mut tokens, line_number, call, FUNCTION, 0);
+            }
             continue;
         };
         let Some(entry) = catalog.entry(id) else {
@@ -132,6 +157,52 @@ pub fn tokens(
     }
 
     encode(tokens, &mut to_column)
+}
+
+/// Index of the `function` token type in [`TOKEN_TYPES`].
+const FUNCTION: u32 = 7;
+
+/// The name span of a function call on `line`, when the index found one.
+///
+/// Deliberately reuses the reference the index already built rather than
+/// re-scanning the text: it is the same data go-to-definition and rename act on,
+/// so a line cannot end up coloured as a call that navigation then disagrees
+/// about.
+fn call_statement(symbols: &FileSymbols, line: u32) -> Option<(u32, u32)> {
+    symbols
+        .references
+        .iter()
+        .find(|reference| {
+            reference.kind == SymbolKind::Function && reference.name_range.start.line == line
+        })
+        .map(|reference| {
+            (
+                reference.name_range.start.character,
+                reference.name_range.end.character,
+            )
+        })
+}
+
+/// Emits one token for an already-known byte span on `line`.
+///
+/// Columns stay in bytes here; [`encode`] converts every token at the end.
+fn push_token(
+    tokens: &mut Vec<Token>,
+    line: u32,
+    span: (u32, u32),
+    token_type: u32,
+    modifiers: u32,
+) {
+    let (start, end) = span;
+    if end > start {
+        tokens.push(Token {
+            line,
+            start,
+            length: end - start,
+            token_type,
+            modifiers,
+        });
+    }
 }
 
 /// Trims a raw line down to the code Skript would parse, or `None` when there
@@ -256,7 +327,9 @@ mod tests {
     }
 
     fn tokens_for(text: &str) -> Vec<lsp::SemanticToken> {
-        tokens(&catalog(), text, |_, column| column)
+        tokens(&catalog(), text, &FileSymbols::default(), |_, column| {
+            column
+        })
     }
 
     #[test]
@@ -317,5 +390,75 @@ mod tests {
         for token in tokens_for("on join:\n\tcancel the event\n") {
             assert!(token.length > 0);
         }
+    }
+}
+
+#[cfg(test)]
+mod coverage_regressions {
+    use super::*;
+    use skript_docs::{fallback_docs, Catalog};
+    use skript_index::text::Position;
+
+    fn lines_with_tokens(text: &str, symbols: &FileSymbols) -> Vec<u32> {
+        let catalog = Catalog::build(fallback_docs());
+        let raw = tokens(&catalog, text, symbols, |_, column| column);
+        // Undo the delta encoding so the assertions can talk about line numbers.
+        let mut line = 0;
+        let mut seen = Vec::new();
+        for token in raw {
+            line += token.delta_line;
+            if !seen.contains(&line) {
+                seen.push(line);
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn prose_inside_a_block_comment_is_never_classified() {
+        // `###` blocks hold English, and classifying it would paint arbitrary
+        // prose as syntax. `skript-format` and the indentation diagnostics
+        // already treat these lines as verbatim; all three have to agree.
+        let text = "###\nstop the server immediately\n###\non join:\n\tstop\n";
+        let lines = lines_with_tokens(text, &FileSymbols::default());
+        assert!(
+            !lines.contains(&1),
+            "block comment prose was classified: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_bare_function_call_statement_is_coloured_as_a_call() {
+        // `giveKit(player)` is a real statement, but Skript registers its effect
+        // internally and publishes no pattern for it, so the catalog can never
+        // explain the line. The index already found the call for
+        // go-to-definition, and reusing that keeps colour and navigation
+        // agreeing about what the line is.
+        let mut symbols = FileSymbols::default();
+        symbols.references.push(skript_index::Reference {
+            kind: SymbolKind::Function,
+            name: "giveKit".into(),
+            range: skript_index::Range::new(Position::new(1, 1), Position::new(1, 16)),
+            name_range: skript_index::Range::new(Position::new(1, 1), Position::new(1, 8)),
+        });
+
+        let text = "on join:\n\tgiveKit(player)\n";
+        let lines = lines_with_tokens(text, &symbols);
+        assert!(
+            lines.contains(&1),
+            "the call statement got no token: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_call_and_no_match_stays_uncoloured() {
+        // The fallback must not fire on every unrecognised line — an honest
+        // absence of colour is the correct answer when we do not know.
+        let text = "on join:\n\tflurgle the wombat\n";
+        let lines = lines_with_tokens(text, &FileSymbols::default());
+        assert!(
+            !lines.contains(&1),
+            "an unknown line was coloured: {lines:?}"
+        );
     }
 }

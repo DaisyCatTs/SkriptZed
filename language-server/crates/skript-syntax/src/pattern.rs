@@ -255,22 +255,28 @@ fn spell_out(run: &[Node]) -> Option<Node> {
         if forms.len().checked_mul(endings.len())? > MAX_FUSED_FORMS {
             return None;
         }
+        // Concatenated raw, and only tidied once the whole run is assembled.
+        // Collapsing at each step trimmed the trailing space off an
+        // intermediate form, so the ` ` branch of `off[ |-]hand` produced
+        // `off` + `hand` = `offhand` and the spaced spelling was lost.
         forms = forms
             .iter()
             .flat_map(|prefix| {
-                endings.iter().map(move |ending| {
-                    // The parts were written flush, but a branch may itself be
-                    // several words (`(n't| not)`), so re-collapse.
-                    collapse(&format!("{prefix}{ending}"))
-                })
+                endings
+                    .iter()
+                    .map(move |ending| format!("{prefix}{ending}"))
             })
             .collect();
     }
 
     // An all-optional run can vanish entirely; that empty form is the `Optional`
     // wrapper, not a branch that matches an empty token.
-    let optional = forms.iter().any(|form| form.is_empty());
-    let mut spelled: Vec<String> = forms.into_iter().filter(|f| !f.is_empty()).collect();
+    let optional = forms.iter().any(|form| form.trim().is_empty());
+    let mut spelled: Vec<String> = forms
+        .iter()
+        .map(|form| collapse(form))
+        .filter(|form| !form.is_empty())
+        .collect();
     spelled.sort();
     spelled.dedup();
 
@@ -390,7 +396,14 @@ impl<'a> Parser<'a> {
 
         macro_rules! flush_literal {
             () => {
-                let trimmed = collapse(&literal);
+                // Inside a group, edge whitespace is kept — see
+                // `collapse_in_group`. At the top level it is noise, and
+                // trimming keeps node text readable.
+                let trimmed = if terminator.is_some() {
+                    collapse_in_group(&literal)
+                } else {
+                    collapse(&literal)
+                };
                 if !trimmed.is_empty() {
                     glued.push(!gap && !literal.starts_with(char::is_whitespace));
                     current.push(Node::Literal(trimmed));
@@ -583,6 +596,36 @@ fn opening_for(close: char) -> char {
 
 /// Lowercases and collapses internal whitespace so that literal comparison is a
 /// plain string equality later on.
+/// Like [`collapse`], but keeps a single space at each end.
+///
+/// Used for literals *inside* a group, because there the edge space carries
+/// meaning that fusion needs. `(is|are)(n't| not)` has branches `n't` and
+/// ` not`; trimming the second turns `is` + ` not` into `isnot` and the
+/// pattern stops matching `{_x} is not set`. `off[ |-]hand` is worse — the
+/// ` ` branch collapses to nothing at all, so `off hand` becomes unreachable.
+///
+/// Preserving the space is safe everywhere else: literal matching, index keys
+/// and specificity all go through `split_whitespace`, which ignores it.
+fn collapse_in_group(text: &str) -> String {
+    let inner = collapse(text);
+    if inner.is_empty() {
+        // A whitespace-only branch, as in `[ |-]`. It matches no token, but it
+        // is the difference between `off hand` and `offhand`.
+        return if text.is_empty() {
+            String::new()
+        } else {
+            " ".to_string()
+        };
+    }
+    let lead = text.starts_with(char::is_whitespace);
+    let trail = text.ends_with(char::is_whitespace);
+    format!(
+        "{}{inner}{}",
+        if lead { " " } else { "" },
+        if trail { " " } else { "" }
+    )
+}
+
 fn collapse(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pending_space = false;

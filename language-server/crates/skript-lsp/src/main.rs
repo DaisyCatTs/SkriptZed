@@ -1516,16 +1516,28 @@ struct Loaded {
 /// Falls back to the temp directory only when the platform's cache location
 /// cannot be determined, since a poor cache still beats refusing to start.
 fn cache_directory() -> std::path::PathBuf {
+    // Every branch checks `is_absolute`, not just the XDG one: a relative value
+    // would put the cache wherever the server happened to be started from.
+    let absolute = |path: std::path::PathBuf| path.is_absolute().then_some(path);
+
     let base = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+        std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .and_then(absolute)
     } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Library/Caches"))
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(absolute)
+            .map(|home| home.join("Library/Caches"))
     } else {
         std::env::var_os("XDG_CACHE_HOME")
             .map(std::path::PathBuf::from)
-            .filter(|path| path.is_absolute())
+            .and_then(absolute)
             .or_else(|| {
-                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+                std::env::var_os("HOME")
+                    .map(std::path::PathBuf::from)
+                    .and_then(absolute)
+                    .map(|home| home.join(".cache"))
             })
     };
 

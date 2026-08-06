@@ -30,3 +30,6 @@ desktop.ini
 # path on one machine, so they are per-developer rather than per-project.
 # `docs/installation.md` documents what to put here.
 .zed/
+
+# Local tooling and editor config
+.claude/

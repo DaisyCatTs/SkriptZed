@@ -500,6 +500,77 @@ mod glued_group_regressions {
     }
 
     #[test]
+    fn a_branch_that_begins_with_a_space_keeps_it() {
+        // The negation forms Skript writes everywhere. Both spellings of each
+        // must work: the contraction is glued to the word before it, while the
+        // spelled-out form carries a leading space *inside* the group.
+        //
+        // Collapsing that space away fused `is` + `not` into `isnot`, so
+        // `{_x} is not set` — an everyday condition — matched nothing at all.
+        for (pattern, line) in [
+            (
+                "%~objects% (do[es](n't| not) exist|(is|are)(n't| not) set)",
+                "{_x} is not set",
+            ),
+            (
+                "%~objects% (do[es](n't| not) exist|(is|are)(n't| not) set)",
+                "{_x} isn't set",
+            ),
+            (
+                "%~objects% (do[es](n't| not) exist|(is|are)(n't| not) set)",
+                "{_x} does not exist",
+            ),
+            ("%dates% ha(s|ve)[(n't| not)] passed", "{_d} has not passed"),
+            ("%dates% ha(s|ve)[(n't| not)] passed", "{_d} has passed"),
+            (
+                "%players% can('t| not) see %entities%",
+                "{_p} can not see {_e}",
+            ),
+            (
+                "%players% can('t| not) see %entities%",
+                "{_p} can't see {_e}",
+            ),
+            (
+                "%scripts/worlds% (is|are)[(n't| not)] loaded",
+                "{_w} is not loaded",
+            ),
+            (
+                "plugin[s] %texts% (is|are)(n't| not) enabled",
+                "plugin \"x\" is not enabled",
+            ),
+        ] {
+            assert!(matches(pattern, line), "{line:?} did not match {pattern}");
+        }
+    }
+
+    #[test]
+    fn a_whitespace_only_branch_is_a_real_alternative() {
+        // `[ |-]` offers "a space, a hyphen, or nothing". The space branch used
+        // to collapse to the empty string and vanish, leaving `off hand`
+        // unmatchable while `offhand` and `off-hand` worked.
+        for (pattern, line) in [
+            (
+                "%living entities%'[s] off[ |-]hand[s] (is|are) raised",
+                "{_e}'s off hand is raised",
+            ),
+            (
+                "%living entities%'[s] off[ |-]hand[s] (is|are) raised",
+                "{_e}'s off-hand is raised",
+            ),
+            (
+                "%players/texts% (is|are) IP[(-| )]banned",
+                "{_p} is IP banned",
+            ),
+            (
+                "%players/texts% (is|are) IP[(-| )]banned",
+                "{_p} is IP-banned",
+            ),
+        ] {
+            assert!(matches(pattern, line), "{line:?} did not match {pattern}");
+        }
+    }
+
+    #[test]
     fn a_glued_group_does_not_match_across_a_space() {
         // `block[s]` is one word; it must not also accept `block s`.
         assert!(!matches("%objects% block[s]", "{_x} block s"));

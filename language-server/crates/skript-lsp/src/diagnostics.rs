@@ -252,6 +252,31 @@ fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut
 }
 
 /// Catalog-backed checks: deprecation, and optionally unrecognised syntax.
+/// Lines that declare a structure entry rather than run a statement.
+///
+/// Taken from the index rather than re-derived from the text: the parse tree
+/// already distinguishes `description: Go home` inside a `command` from a line
+/// of the same shape inside a trigger, and guessing from a `key: value` shape
+/// would misfire on ordinary effects that contain a colon.
+fn structure_entry_lines(document: &Document) -> std::collections::HashSet<u32> {
+    document
+        .symbols()
+        .flat()
+        .into_iter()
+        .filter(|symbol| {
+            matches!(
+                symbol.kind,
+                SymbolKind::Entry
+                    | SymbolKind::Option
+                    | SymbolKind::Alias
+                    | SymbolKind::GlobalVariable
+                    | SymbolKind::LocalVariable
+            )
+        })
+        .map(|symbol| symbol.range.start.line)
+        .collect()
+}
+
 /// Line numbers inside `###` block comments, delimiters excluded.
 fn block_comment_lines(text: &str) -> std::collections::HashSet<usize> {
     let mut inside = false;
@@ -276,12 +301,22 @@ fn check_catalog(
     out: &mut Vec<Diagnostic>,
 ) {
     let prose = block_comment_lines(document.text());
+    let entries = structure_entry_lines(document);
 
     for (number, raw) in document.text().lines().enumerate() {
         let trimmed = raw.trim();
         // Prose inside a `###` block is not syntax and must never be reported
         // as unrecognised.
         if trimmed.is_empty() || trimmed.starts_with('#') || prose.contains(&number) {
+            continue;
+        }
+        // A structure's entries are indented, but they are not statements:
+        // `description:` in a command, `prefix:` in `options:`, `{score::*} = 0`
+        // in `variables:`. None of them can match an effect, section or
+        // condition, so once the role filter stopped the catch-all expressions
+        // absorbing them, every one became an "unknown syntax" hint. The parse
+        // tree already knows which lines these are.
+        if entries.contains(&(number as u32)) {
             continue;
         }
         let code = trimmed.trim_end_matches(':');
@@ -504,5 +539,61 @@ mod review_regressions {
     fn real_indentation_errors_are_still_caught_around_a_block_comment() {
         let found = codes_for("###\n   prose\n###\non join:\n \tmixed\n");
         assert!(found.contains(&"mixed-indentation"), "got {found:?}");
+    }
+}
+
+#[cfg(test)]
+mod entry_line_regressions {
+    use super::*;
+
+    /// With `unknown_syntax` on, a command's entries and an `options:` block
+    /// must produce no hints. They are indented, so the role filter classifies
+    /// them as statements — and no entry can ever match an effect, section or
+    /// condition, which made the setting unusable on any real script.
+    #[test]
+    fn structure_entries_are_not_unknown_syntax() {
+        let source = "options:
+	prefix: &6[Server]&r
+
+aliases:
+	stones = stone, granite
+
+variables:
+	{score::*} = 0
+
+command /home:
+	description: Go home
+	permission: skript.home
+	usage: /home
+	trigger:
+		stop
+";
+
+        let catalog = skript_docs::Catalog::build(skript_docs::fallback_docs());
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+        let document = workspace.get("file:///t.sk").unwrap();
+
+        let found = check(
+            document,
+            &workspace,
+            Some(&catalog),
+            None,
+            Options {
+                unknown_syntax: true,
+                ..Options::default()
+            },
+        );
+
+        let flagged: Vec<u32> = found
+            .iter()
+            .filter(|d| d.code == "unknown-syntax")
+            .map(|d| d.range.start.line)
+            .collect();
+
+        assert!(
+            flagged.is_empty(),
+            "structure entries reported as unknown syntax on lines {flagged:?}"
+        );
     }
 }

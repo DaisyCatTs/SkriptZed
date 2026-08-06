@@ -7,23 +7,33 @@ Write Minecraft server scripts in Zed, with the tooling Skript has never had.
 [![Skript 2.16](https://img.shields.io/badge/Skript-2.16-8B5CF6)](https://github.com/SkriptLang/Skript)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-green.svg)](LICENSE)
 
-**Skript for Zed** is full language support for
-[Skript](https://github.com/SkriptLang/Skript) — the scripting language Minecraft
-server owners use to write plugins without writing Java. Before this extension,
-Zed had no Skript support at all.
+Full language support for [Skript](https://github.com/SkriptLang/Skript) — the
+scripting language Minecraft server owners use to write plugins without writing
+Java.
 
-Install it and `.sk` files stop being plain text. You get highlighting that
-understands Skript's indentation rules, an outline of every command, event and
-function, go-to-definition and rename across your whole project, hover
-documentation straight from Skript's own database, completion that knows only
-events can follow `on `, and diagnostics for the indentation Skript would reject
-— before you upload the file.
+Writing Skript has always meant writing it blind. No editor knew the language, so
+you found your mistakes by uploading the file, watching the console, and doing it
+again. This extension moves that loop into your editor.
 
-It knows your addons too: it reads your server's `plugins/` folder and loads
-syntax for SkBee, skript-reflect, SkQuery and 160+ others.
+- **Stop guessing at syntax.** Hover any line for its documentation, pulled from
+  Skript's own database — every effect, condition and expression, with examples
+  and the version it was added in.
+- **Catch the mistakes before the upload.** Indentation Skript would reject,
+  unclosed `###` blocks, duplicate declarations, calls to functions that do not
+  exist, deprecated syntax.
+- **Navigate a real project.** Go to definition, find every reference, and rename
+  across every file — including the ones you have not opened.
+- **Completion that understands context.** Only events after `on `, only
+  conditions inside `if `, only expressions inside `%…%`. Patterns insert with a
+  tab stop per slot.
+- **Your addons, not just core Skript.** It reads your server's `plugins/` folder
+  and loads syntax for SkBee, skript-reflect, SkQuery and 160+ others — so your
+  addon syntax gets the same hover and completion as everything else.
+- **Looks right in your theme.** No colour is defined anywhere in this extension.
+  It uses the capture names your theme already styles.
 
-No colour is defined anywhere in it, so it looks right in whatever theme you
-already use.
+Free, MIT licensed, and held to SkriptLang's own repository: ~540 real scripts
+must parse with zero errors on every change.
 
 <!-- SCREENSHOT: hero.png goes here. See docs/media/README.md for what to capture. -->
 

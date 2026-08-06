@@ -32,6 +32,84 @@ helper scripts rewritten in Node so Windows needs no shell.
 | 8 | **Addon ecosystem + version awareness** | ✅ done — 168 tests + 40 end-to-end checks |
 | 9 | **Classification accuracy pass** | ✅ done — 193 tests; see below |
 | 10 | **Highlighting + IntelliSense pass** | ✅ done — 198 tests, 35 grammar tests; see below |
+| 11 | **Production readiness / v0.1.0** | ✅ released — 201 tests, all five binaries published |
+
+---
+
+## v0.1.0 released (2026-08-07)
+
+Tagged on `main`, five platform binaries published, `draft=false`
+`prerelease=false` `assets=5` — exactly what the extension's
+`latest_github_release` query requires. The "finding a prerelease" failure is
+gone.
+
+### The defect that would have broken every install
+
+The grammar pin and the `v0.1.0` tag both pointed at commits reachable only from
+`fix/classification-accuracy`, with `main` 15 commits behind. Zed resolves a
+grammar by `git fetch --depth 1 origin <rev>`; deleting that branch after merge
+— the normal flow — would have made the SHA unreachable and left every install
+with no highlighting and no usable error. Branch merged, rev re-pinned to a
+`main` commit, tag moved, and the fetch replayed from an empty directory to
+prove it.
+
+### Two independent reasons the release had been empty
+
+1. The workflow only triggered on `main`/`master` and pull requests, so the
+   release job's `refs/tags/v` gate was unreachable. Fixed with `tags: ['v*']`.
+2. The release job had **no `permissions:` block**, and
+   `softprops/action-gh-release` needs `contents: write`. The default token has
+   been read-only for new repos since 2023, so the upload would have 403'd after
+   three gate jobs and five cross-builds passed.
+
+**Standing quirk:** on this repository, `push` events still create no workflow
+runs, while `pull_request` and `workflow_dispatch` do. Cause unknown. Cut a
+release with `gh workflow run ci.yml --ref v0.1.0` — dispatching against a tag
+ref makes `github.ref` satisfy the release gate. That is how v0.1.0 shipped.
+
+### Robustness
+
+* **A panic that killed the server.** Completion and signature help sliced a
+  line by the client's column with only a length clamp; under the UTF-8 encoding
+  that column is a raw byte offset, and slicing mid-character panics. Skript
+  strings are full of `§` and emoji. Both now go through `convert::line_prefix`,
+  tested across every byte offset of a line containing both.
+* **The cache left `/tmp`.** `/tmp/skript-lsp` was a predictable name in a
+  world-writable directory — another local user could pre-create it and serve a
+  crafted `docs-latest.json` as the authoritative syntax database — and was swept
+  by systemd-tmpfiles, defeating the 24-hour TTL. Now uses the platform cache
+  directory.
+* **The offline fallback stopped being silent.** With no network the catalog
+  drops to 17 entries with zero events, expressions or conditions, and said so
+  only as an INFO log line. It now shows a warning naming what still works.
+
+### Documentation
+
+The README had no installation section at all. Install is now step one and
+`semantic_tokens` step two, because Zed ships it `"off"` and it is what colours
+effects and conditions — the most likely first impression otherwise is "half my
+file is grey, this is broken".
+
+Corrected the one claim that actively misled: `docsPath` does **not** make
+`unknownSyntaxDiagnostics` safe, because `/sk gen-docs` emits one docs.json per
+addon and Skript's describes Skript only. `docs/language-server.md` had this
+right; the README contradicted it.
+
+Also corrected `docs/publishing.md`, which told a maintainer to split the grammar
+into its own repository — Zed supports a grammar subdirectory via the `path` key
+(its own `extension_builder.rs`; Civet, cfml and `zed-extensions/php` all ship
+that way). Deleted `docs/PLAN.md` (three components never built, plus an absolute
+local path). Merged the two contributor docs into a root `CONTRIBUTING.md`.
+Added CHANGELOG, SECURITY.md, issue forms, PR template, THIRD-PARTY-NOTICES.
+
+### Still outstanding
+
+* **Screenshots.** `docs/media/README.md` says exactly what to capture; the
+  README has marked placeholders. Only Daisy can take them.
+* **Registry submission.** Everything is verified and ready — see
+  `docs/publishing.md`. Needs a fork of `zed-industries/extensions` to a
+  *personal* account and a dev-extension test on a clean machine first; the
+  registry closes untested submissions without feedback.
 
 ---
 

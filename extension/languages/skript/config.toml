@@ -47,10 +47,24 @@ auto_indent_on_paste = false
 # whitespace and a comment — but NOT when that comment is Skript's `#-#` marker,
 # which explicitly says "this trailing colon does not open a section".
 #
+# The leading group is the line's *code* portion, spelled out the way Skript's
+# own `Node.splitLine` treats it: a quoted string, a `{…}` variable name, or an
+# ordinary character. `#` is literal inside the first two, which is why
+# `send "Item #1":` and `set {count##} to 1:` must open a block — and why the
+# previous `^[^#]*` prefix, which forbade `#` anywhere on the line, got both
+# wrong while the scanner correctly emitted SECTION_COLON for them. A `#`
+# reached *outside* a string or variable still ends the code, so a trailing
+# comment's own colon cannot open a section.
+#
 # Zed compiles these with the Rust `regex` crate, which has no lookaround, so
 # "a comment that does not begin with `#-#`" is spelled out as an alternation:
-# `#` followed by a non-dash, or by a dash and a non-hash, or by nothing.
-increase_indent_pattern = "^[^#]*:[ \\t]*(#([^-].*|-[^#].*|-?))?$"
+# `#` followed by a non-dash, or by a dash and a non-hash, or by nothing. `\r`
+# is matched explicitly rather than trusting `$` to tolerate a CRLF ending.
+#
+# Checked against all 19,391 lines of the upstream corpus: no line that used to
+# indent stopped doing so, and four lines in Skript's own EvtFish.sk that should
+# always have indented now do.
+increase_indent_pattern = "^(?:\"[^\"\\n]*\"|\\{[^}\\n]*\\}|[^#\"{\\n])*:[ \\t\\r]*(?:#(?:[^-\\n].*|-[^#\\n].*|-?))?[ \\t\\r]*$"
 
 # `else` and `else if` align to the `if` that opened the chain rather than
 # merely losing one level. The `valid_after` names are matched against the

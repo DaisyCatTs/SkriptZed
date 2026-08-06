@@ -30,6 +30,78 @@ helper scripts rewritten in Node so Windows needs no shell.
 | 6 | Extension `src/lib.rs` LSP wiring | ✅ done (degrades cleanly with no server installed) |
 | 7 | Docs, examples, CI | ✅ done |
 | 8 | **Addon ecosystem + version awareness** | ✅ done — 168 tests + 40 end-to-end checks |
+| 9 | **Classification accuracy pass** | ✅ done — 193 tests; see below |
+
+---
+
+## Classification accuracy pass (2026-08-06)
+
+Written after building `scripts/coverage.mjs`, which measures what fraction of a
+real script the extension actually explains. The first run said **68%** of
+executable lines were classified. Three defects accounted for the gap, and all
+three were invisible to the existing tests because those tests only exercised
+patterns that happened to avoid them.
+
+**1. The whole-line rule sat outside the search.** `match_pattern` ran
+`match_nodes` once and then tested `end == tokens.len()`. A pattern ending in a
+slot therefore succeeded on the first token that slot could take, failed the
+length test, and could not backtrack. `wait %timespan%` never matched
+`wait 3 seconds`; `loop %objects%` matched `loop {_x::*}` but not
+`loop all players`. Fixed by threading the continuation through the search as a
+stack of node lists, so exhausting the pattern demands exhausting the line.
+
+**2. Groups glued to a word never matched — 38% of all published patterns.**
+`cancel[l]ed`, `block[s]`, `[right|left]click`, `ha(s|ve)`, `toggl(e|ing)`.
+Matching is token-based, so `Literal("cancel")` was compared against the whole
+token `cancelled`. Worse, the inverted index keyed those patterns on a word that
+can never appear in a line, so they were never offered to the matcher at all.
+The parser now records which nodes are written with no space between them and
+spells the run out at parse time, fixing the index and the match together.
+
+**3. Expressions were allowed to explain whole lines.** Skript ships three
+expressions that match literally any text — `[the] [event-]<.+>` foremost. They
+are correct as expressions, because an expression is only ever *part* of a line.
+Once (1) was fixed they began winning whole lines, and nothing was reportable as
+unknown syntax any more. `LineRole` now rules categories out by indentation:
+column 0 is a structure or an event, an indented line is an effect, section or
+condition, and an expression is never either.
+
+Two things fell out of having the role available:
+
+* An event's registered pattern does **not** contain the `on` — Skript's event
+  structure wraps every one in `[on] … [with priority …]` before matching.
+  Undoing that wrapper lets `on first join` reach `first (join|login)` and its
+  documentation instead of the generic structure.
+* Structures are keyword-introduced, so at the top level they get the first
+  look. Otherwise the "on command" event outranks the command *structure* on
+  `command /home <text>:`.
+
+Also: a bare function-call statement (`giveKit(player)`) is real Skript with no
+published pattern, and is now classified from the reference index that already
+powers go-to-definition; and prose inside `###` blocks is no longer classified,
+matching what `skript-format` and the indentation diagnostics already did.
+
+### Measured before → after
+
+| File | Lines classified | Note |
+|---|---|---|
+| `examples/…/showcase.sk` | 68% → **85%** | remainder is command/options *entries* |
+| `…/tests/misc/EntityData.sk` | 5% → **100%** | ~1,000 bare function-call statements |
+| `…/expressions/ExprArithmetic.sk` | 100% → **100%** | already clean |
+| `…/general/EquippableComponents.sk` | 72% → 72% | remainder is the test-only `assert` effect |
+
+Latency, measured end to end through the LSP: **12 ms** for a 67-line script,
+**169 ms** for a 1,023-line one. Matching costs 272 µs/line against all 2,117
+core patterns — the budget in the plan was 5 ms.
+
+`coverage.mjs` also reports a **combined** figure (tree-sitter ∪ semantic),
+because either layer alone understates what a reader sees: the grammar
+deliberately leaves statement prose uncoloured, since only the server can tell
+an effect from a condition. showcase.sk is **92%** combined.
+
+> Its own first version undercounted multi-line captures, so a `###` block read
+> as uncoloured and showcase.sk scored 78% when it was really 85%. Check the
+> harness before believing the harness.
 
 ---
 

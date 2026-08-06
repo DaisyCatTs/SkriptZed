@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # Without this the `release` job is unreachable: it is gated on
+    # `refs/tags/v`, but a tag push matched no trigger at all, so the whole
+    # workflow never started for one. That is why v0.1.0 could be tagged and
+    # still leave the repository with zero release assets.
+    tags: ['v*']
   pull_request:
+  # So a release can be re-cut without moving the tag.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -135,6 +142,12 @@ jobs:
     name: Release binaries
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [grammar, language-server, extension]
+    # Without this the upload 403s. GITHUB_TOKEN has been read-only by default
+    # for new repositories since 2023, so the failure lands *after* three gate
+    # jobs and five cross-builds have already passed — and the only symptom a
+    # user ever sees is the extension reporting that it cannot find skript-lsp.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +189,21 @@ jobs:
           else
             tar czf "../../../../$name.tar.gz" skript-lsp
           fi
+
+      # A release that uploads nothing still looks green, and the first symptom
+      # is every new user being told the extension cannot find its language
+      # server. Fail here instead, where the cause is obvious.
+      - name: Check the asset was actually produced
+        shell: bash
+        run: |
+          name="skript-lsp-${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then asset="$name.zip"; else asset="$name.tar.gz"; fi
+          if [ ! -s "$asset" ]; then
+            echo "::error::$asset is missing or empty — extension/src/lib.rs expects this exact name"
+            ls -la
+            exit 1
+          fi
+          echo "$asset $(stat -c%s "$asset" 2>/dev/null || stat -f%z "$asset") bytes"
 
       - uses: softprops/action-gh-release@v2
         with:

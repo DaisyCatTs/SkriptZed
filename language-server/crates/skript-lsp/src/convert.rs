@@ -153,6 +153,24 @@ fn nth_line(text: &str, line: u32) -> &str {
         .trim_end_matches('\r')
 }
 
+/// The text of `line` up to `character`, clamped to a real char boundary.
+///
+/// The obvious `&line[..character.min(line.len())]` **panics**, and the length
+/// clamp does not save it: slicing a `&str` at a byte offset that lands inside a
+/// multi-byte character is a panic, and under the UTF-8 position encoding
+/// `from_lsp_position` passes the client's column straight through as a byte
+/// offset. A client that is one change out of sync, or that counts codepoints
+/// while advertising `utf-8`, then kills the server on any line containing `§`,
+/// `é` or an emoji — which in Skript means most lines that contain a message.
+///
+/// Truncating to the boundary below is the right recovery: the caller wants the
+/// prefix in order to read what the user has typed, and half a character is not
+/// something they typed.
+pub fn line_prefix(line: &str, character: u32) -> &str {
+    let byte = (character as usize).min(line.len());
+    &line[..floor_char_boundary(line, byte)]
+}
+
 /// `str::floor_char_boundary` is still unstable, so this is the stable spelling.
 fn floor_char_boundary(text: &str, mut index: usize) -> usize {
     while index > 0 && !text.is_char_boundary(index) {
@@ -217,5 +235,37 @@ mod tests {
             Encoding::Utf8
         );
         assert_eq!(Encoding::negotiate(None), Encoding::Utf16);
+    }
+}
+
+#[cfg(test)]
+mod line_prefix_tests {
+    use super::line_prefix;
+
+    #[test]
+    fn a_column_inside_a_multibyte_character_does_not_panic() {
+        // The bug this guards: `&line[..n]` panics when `n` lands inside a
+        // character, and clamping to `line.len()` does not prevent that. Skript
+        // messages are full of `§` and emoji, so the offsets below are ordinary,
+        // not contrived.
+        let line = "send \"héllo ✦\" to player";
+        // Walk every byte offset, including the ones inside `é` and `✦`.
+        for byte in 0..=line.len() + 4 {
+            let prefix = line_prefix(line, byte as u32);
+            assert!(line.starts_with(prefix));
+        }
+    }
+
+    #[test]
+    fn it_truncates_to_the_boundary_below() {
+        let line = "aé";
+        // `é` occupies bytes 1..3, so byte 2 is mid-character.
+        assert_eq!(line_prefix(line, 2), "a");
+        assert_eq!(line_prefix(line, 3), "aé");
+    }
+
+    #[test]
+    fn a_column_past_the_end_yields_the_whole_line() {
+        assert_eq!(line_prefix("set {_x}", 999), "set {_x}");
     }
 }

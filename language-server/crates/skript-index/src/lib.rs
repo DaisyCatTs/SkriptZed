@@ -201,6 +201,29 @@ impl Workspace {
         out
     }
 
+    /// Declarations that are actually in scope at `from_uri`.
+    ///
+    /// [`Workspace::workspace_symbols`] answers a different question — it backs
+    /// the project-wide symbol picker, where showing every file's symbols is the
+    /// whole point. Completion used it anyway, so a file-local `{_total}` and
+    /// another script's options were offered inside every unrelated trigger.
+    /// Suggesting a name that Skript will not resolve is worse than suggesting
+    /// nothing, so this applies the same `is_file_local` rule as
+    /// [`Workspace::definitions`].
+    pub fn symbols_in_scope(&self, from_uri: &str) -> Vec<(&Document, &Symbol)> {
+        let mut out = Vec::new();
+        for document in self.documents.values() {
+            let same_file = document.uri() == from_uri;
+            for symbol in document.symbols().flat() {
+                if is_file_local(symbol.kind) && !same_file {
+                    continue;
+                }
+                out.push((document, symbol));
+            }
+        }
+        out
+    }
+
     /// Declarations across the whole workspace matching `query`.
     pub fn workspace_symbols(&self, query: &str) -> Vec<(&Document, &Symbol)> {
         let needle = query.to_ascii_lowercase();

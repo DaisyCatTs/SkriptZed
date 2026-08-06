@@ -8,16 +8,17 @@ authors = ["Daisy"]
 
 snippets = ["./snippets/skript.json"]
 
-# During development this points at the local grammar checkout. Zed resolves it
-# with `git remote add origin <repository>` + `git fetch --depth 1 origin <rev>`,
-# so a `file://` URL works but `rev` must still name a real commit — run
-# `scripts/dev-setup.mjs` to create one and rewrite the value below.
+# Zed resolves this by running
+#   git remote add origin <repository>
+#   git fetch --depth 1 origin <rev>
+# so `rev` must name a commit that exists **on GitHub**, not just locally.
 #
-# Before publishing, replace `repository` with the public HTTPS URL of the
-# split-out tree-sitter-skript repository.
+# For local grammar work, `node scripts/dev-setup.mjs` rewrites these two values
+# to a `file://` URL and a fresh local commit. Do not commit that rewrite — the
+# version checked in here is the one every user installs from.
 [grammars.skript]
-repository = "file:///C:/Users/Daisy/Desktop/ZedSkript"
-rev = "8fcedff796a4a9a8f29c3a45cd422ce94ce9621b"
+repository = "https://github.com/DaisyCatTs/SkriptZed"
+rev = "18ad70e59df2eb69645d5891ce0caef058399754"
 path = "tree-sitter-skript"
 
 [language_servers.skript-lsp]

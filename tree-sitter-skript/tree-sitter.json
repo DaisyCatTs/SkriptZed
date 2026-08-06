@@ -7,8 +7,6 @@
       "scope": "source.skript",
       "path": ".",
       "file-types": ["sk"],
-      "highlights": ["queries/highlights.scm"],
-      "injections": ["queries/injections.scm"],
       "injection-regex": "^(sk|skript)$"
     }
   ],
@@ -18,7 +16,7 @@
     "description": "Skript grammar for tree-sitter",
     "authors": [{ "name": "Daisy" }],
     "links": {
-      "repository": "https://github.com/DaisyCatTs/tree-sitter-skript"
+      "repository": "https://github.com/DaisyCatTs/SkriptZed"
     }
   },
   "bindings": {

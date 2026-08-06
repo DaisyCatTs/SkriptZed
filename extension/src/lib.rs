@@ -32,6 +32,25 @@ const NOT_FOUND_MESSAGE: &str = concat!(
     "  \"lsp\": { \"skript-lsp\": { \"binary\": { \"path\": \"/path/to/skript-lsp\" } } }",
 );
 
+/// Turns a download failure into something a user can act on.
+///
+/// Zed's host-side `latest_github_release` reports "no release matched" with the
+/// hard-coded context `finding a prerelease`, and an **empty release list** is
+/// the commonest way to reach it. Passed through verbatim that reads as a bug in
+/// the extension's prerelease handling, when what it really means is that the
+/// repository has published nothing yet.
+fn explain(error: &str) -> String {
+    if error.contains("prerelease") || error.contains("pre-release") {
+        return format!(
+            "No release has been published to {RELEASE_REPO} yet, so there is no \
+             binary to download. Build one with `cargo build --release -p skript-lsp` \
+             and point Zed at it with the setting above.\n\n\
+             Underlying error: {error}"
+        );
+    }
+    format!("Underlying error: {error}")
+}
+
 struct SkriptExtension {
     /// Resolved once per extension process, then re-`stat`ed on each use so a
     /// binary deleted underneath us is re-resolved rather than reported as
@@ -45,7 +64,18 @@ impl SkriptExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree).ok();
+        // A malformed `lsp.skript-lsp` block used to be swallowed by `.ok()`,
+        // which made it indistinguishable from having configured nothing at all:
+        // the user sets a binary path, gets a typo subtly wrong, and the
+        // extension silently walks past it to the download path and reports
+        // "could not find or download skript-lsp". Say what actually happened.
+        let settings = match LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                println!("skript-lsp: ignoring unreadable `lsp.skript-lsp` settings: {error}");
+                None
+            }
+        };
         let binary_settings = settings.and_then(|settings| settings.binary);
         let configured_args = binary_settings
             .as_ref()
@@ -114,7 +144,7 @@ impl SkriptExtension {
                         language_server_id,
                         &zed::LanguageServerInstallationStatus::Failed(error.clone()),
                     );
-                    Err(format!("{NOT_FOUND_MESSAGE}\n\nUnderlying error: {error}"))
+                    Err(format!("{NOT_FOUND_MESSAGE}\n\n{}", explain(&error)))
                 }
             },
         }

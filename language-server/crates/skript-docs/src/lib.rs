@@ -121,6 +121,57 @@ impl Catalog {
         self.classify(line).into_iter().next()
     }
 
+    /// Classifies a whole line, using its position in the script to rule out
+    /// categories that cannot possibly explain it.
+    ///
+    /// Prefer this over [`Catalog::classify_best`] for anything derived from a
+    /// real line; the unfiltered version exists for fragments and for callers
+    /// that genuinely have no structural context.
+    pub fn classify_line(&self, line: &str, role: LineRole) -> Option<(EntryId, Match)> {
+        let code = line.trim_end().trim_end_matches(':').trim_end();
+
+        // Skript's event structure wraps every event pattern in
+        // `[on] [cancelled|…] <.+> [with priority …]` before matching, so a
+        // registered event's own pattern never contains the `on`. Without
+        // undoing that wrapper here, `on first join` can only ever reach the
+        // generic structure — never `first (join|login)` and its documentation.
+        if role.allows(Category::Event) {
+            if let Some((bare, offset)) = strip_event_wrapper(code) {
+                if let Some((id, mut matched)) = self.first_in(bare, &[Category::Event]) {
+                    for capture in &mut matched.captures {
+                        capture.start += offset;
+                        capture.end += offset;
+                    }
+                    return Some((id, matched));
+                }
+            }
+        }
+
+        // Matched once and filtered per tier. Running the matcher again for each
+        // tier would triple the cost of the hottest call in the server for an
+        // answer already sitting in this list.
+        let ranked = self.index.matches(code);
+        role.tiers().iter().find_map(|tier| {
+            ranked
+                .iter()
+                .find(|(id, _)| tier.contains(&id.category))
+                .map(|(id, matched)| (**id, matched.clone()))
+        })
+    }
+
+    /// The best match whose category is one of `allowed`.
+    ///
+    /// Filtering after ranking rather than before keeps the specificity order
+    /// intact across categories: `allowed` is a membership test, not a priority
+    /// list.
+    fn first_in(&self, line: &str, allowed: &[Category]) -> Option<(EntryId, Match)> {
+        self.index
+            .matches(line)
+            .into_iter()
+            .find(|(id, _)| allowed.contains(&id.category))
+            .map(|(id, matched)| (*id, matched))
+    }
+
     /// Entries in `category` whose name or patterns contain `query`.
     ///
     /// Deliberately simple substring matching: the LSP client does the fuzzy
@@ -147,6 +198,88 @@ impl Catalog {
     pub fn hover(&self, id: EntryId) -> Option<String> {
         Some(hover::render(id.category, self.entry(id)?))
     }
+}
+
+/// Where a line sits in a script, which decides what can explain it.
+///
+/// Skript's categories are not interchangeable, and three core expressions —
+/// `[the] [event-]<.+>`, `[all [[of] the]|the|every] %*type%` and the entity
+/// list — match *literally any text*. They are correct as expressions, because
+/// an expression is only ever part of a line. Letting them compete with effects
+/// for a whole line means every statement the catalog does not recognise comes
+/// back confidently mislabelled as "Creature/Entity/Player/…" — worse than no
+/// answer, because hover and semantic colour then assert something false.
+///
+/// Ruling categories out by position is what keeps classification honest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineRole {
+    /// Column 0. Opens a structure: an event, a command, a function.
+    TopLevel,
+    /// Indented. A statement inside a trigger or section body.
+    Statement,
+    /// Position unknown — a fragment, or a caller with no tree to consult.
+    Any,
+}
+
+impl LineRole {
+    /// Whether the line's indentation puts it at the top level.
+    pub fn from_indent(indent: usize) -> LineRole {
+        if indent == 0 {
+            LineRole::TopLevel
+        } else {
+            LineRole::Statement
+        }
+    }
+
+    /// The categories that can explain a whole line here, in tiers.
+    ///
+    /// Every category in a tier is tried together and ranked by pattern
+    /// specificity; a later tier is consulted only when an earlier one has
+    /// nothing. Tiers exist because specificity alone cannot separate
+    /// `command <.+>` (the structure) from `command [%text%]` (the "on command"
+    /// event) — both match `command /home <text>:` and the event happens to
+    /// score higher. Structures are introduced by a keyword, so at the top level
+    /// they get the first look and events pick up everything else.
+    pub fn tiers(self) -> &'static [&'static [Category]] {
+        match self {
+            LineRole::TopLevel => &[&[Category::Structure], &[Category::Event]],
+            LineRole::Statement => &[&[Category::Effect, Category::Section, Category::Condition]],
+            LineRole::Any => &[Category::ALL],
+        }
+    }
+
+    fn allows(self, category: Category) -> bool {
+        self.tiers().iter().any(|tier| tier.contains(&category))
+    }
+}
+
+/// Undoes the `[on] [cancelled|…] … [with priority …]` wrapper that Skript's
+/// event structure puts around every event pattern.
+///
+/// Returns the bare event text and its byte offset within `line`, so captures
+/// taken against it can be shifted back onto the original.
+fn strip_event_wrapper(line: &str) -> Option<(&str, usize)> {
+    // Lowercasing ASCII preserves byte length, so offsets stay valid.
+    let lower = line.to_ascii_lowercase();
+    let mut offset = line.len() - lower.strip_prefix("on ")?.len();
+
+    for modifier in ["uncancelled ", "cancelled ", "any ", "all "] {
+        if let Some(shorter) = lower[offset..].strip_prefix(modifier) {
+            offset = line.len() - shorter.len();
+            break;
+        }
+    }
+
+    let mut bare = &line[offset..];
+    if let Some(at) = lower[offset..].rfind(" with priority ") {
+        bare = &bare[..at];
+    }
+
+    let trimmed = bare.trim_start();
+    offset += bare.len() - trimmed.len();
+    let trimmed = trimmed.trim_end();
+
+    (!trimmed.is_empty()).then_some((trimmed, offset))
 }
 
 /// A tiny built-in catalog used when the real database cannot be fetched.

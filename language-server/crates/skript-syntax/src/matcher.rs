@@ -138,9 +138,24 @@ pub(crate) fn match_pattern(pattern: &Pattern, line: &str) -> Option<Match> {
     };
     let mut captures = Vec::new();
 
-    let end = state.match_nodes(&pattern.nodes, 0, &mut captures)?;
-    // A pattern describes the whole line, so leftover tokens mean no match.
-    (end == tokens.len()).then_some(Match { captures })
+    state.match_nodes(&pattern.nodes, None, 0, &mut captures)?;
+    Some(Match { captures })
+}
+
+/// What is still to be matched after the current node list runs out.
+///
+/// A pattern must describe the *whole* line, and that requirement has to be part
+/// of the search rather than a test applied to its first answer. Checking
+/// `end == tokens.len()` after `match_nodes` returned meant a pattern ending in a
+/// slot succeeded on the first token it could take and then failed the length
+/// test with no chance to backtrack — so `wait %timespan%` matched `wait 1 tick`
+/// never, and `loop %objects%` matched `loop {_x::*}` but not `loop all players`.
+///
+/// Entering a group has to remember the nodes that follow it, so the tail is a
+/// stack of node lists, threaded as a linked list through the call frames.
+struct Cont<'p, 'c> {
+    nodes: &'p [Node],
+    next: Option<&'c Cont<'p, 'c>>,
 }
 
 struct State<'a> {
@@ -149,12 +164,37 @@ struct State<'a> {
     steps: u32,
 }
 
+/// The fewest tokens `nodes` followed by `cont` can possibly consume.
+///
+/// Used only to prune, so it must never over-estimate: an optional contributes
+/// nothing, a choice contributes its cheapest branch, and a slot contributes the
+/// one token it is required to take.
+fn min_tokens(nodes: &[Node], cont: Option<&Cont<'_, '_>>) -> usize {
+    let here: usize = nodes
+        .iter()
+        .map(|node| match node {
+            Node::Literal(text) => text.split_whitespace().count(),
+            Node::Optional(_) => 0,
+            Node::Choice(branches) => branches
+                .iter()
+                .map(|branch| min_tokens(branch, None))
+                .min()
+                .unwrap_or(0),
+            Node::Slot(_) | Node::Regex(_) => 1,
+        })
+        .sum();
+
+    here + cont.map_or(0, |tail| min_tokens(tail.nodes, tail.next))
+}
+
 impl State<'_> {
-    /// Matches `nodes` starting at token `pos`, returning the position after
-    /// the last consumed token.
-    fn match_nodes(
+    /// Matches `nodes`, then `cont`, starting at token `pos`. Returns the
+    /// position after the last consumed token, which on success is always the
+    /// end of the line.
+    fn match_nodes<'p>(
         &mut self,
-        nodes: &[Node],
+        nodes: &'p [Node],
+        cont: Option<&Cont<'p, '_>>,
         pos: usize,
         captures: &mut Vec<SlotCapture>,
     ) -> Option<usize> {
@@ -164,7 +204,12 @@ impl State<'_> {
         }
 
         let Some((node, rest)) = nodes.split_first() else {
-            return Some(pos);
+            // This node list is spent. Resume the enclosing one, or — if there
+            // is none — demand that the line is spent too.
+            return match cont {
+                Some(tail) => self.match_nodes(tail.nodes, tail.next, pos, captures),
+                None => (pos == self.tokens.len()).then_some(pos),
+            };
         };
 
         match node {
@@ -176,52 +221,66 @@ impl State<'_> {
                     }
                     cursor += 1;
                 }
-                self.match_nodes(rest, cursor, captures)
+                self.match_nodes(rest, cont, cursor, captures)
             }
 
             Node::Optional(inner) => {
                 // Present first: a longer match is the more informative one, and
                 // trying it first means the common case does not backtrack.
                 let mark = captures.len();
-                if let Some(after) = self.match_nodes(inner, pos, captures) {
-                    if let Some(end) = self.match_nodes(rest, after, captures) {
-                        return Some(end);
-                    }
+                let tail = Cont {
+                    nodes: rest,
+                    next: cont,
+                };
+                if let Some(end) = self.match_nodes(inner, Some(&tail), pos, captures) {
+                    return Some(end);
                 }
                 captures.truncate(mark);
-                self.match_nodes(rest, pos, captures)
+                self.match_nodes(rest, cont, pos, captures)
             }
 
             Node::Choice(branches) => {
+                let tail = Cont {
+                    nodes: rest,
+                    next: cont,
+                };
                 for branch in branches {
                     let mark = captures.len();
-                    if let Some(after) = self.match_nodes(branch, pos, captures) {
-                        if let Some(end) = self.match_nodes(rest, after, captures) {
-                            return Some(end);
-                        }
+                    if let Some(end) = self.match_nodes(branch, Some(&tail), pos, captures) {
+                        return Some(end);
                     }
                     captures.truncate(mark);
                 }
                 None
             }
 
-            Node::Slot(slot) => self.match_variable_width(rest, pos, captures, Some(slot)),
+            Node::Slot(slot) => self.match_variable_width(rest, cont, pos, captures, Some(slot)),
 
-            Node::Regex(_) => self.match_variable_width(rest, pos, captures, None),
+            Node::Regex(_) => self.match_variable_width(rest, cont, pos, captures, None),
         }
     }
 
     /// Slots and regex holes both consume one or more tokens; the following
     /// nodes decide how many. Shortest first, so a trailing literal anchors the
     /// slot at its first occurrence rather than its last.
-    fn match_variable_width(
+    fn match_variable_width<'p>(
         &mut self,
-        rest: &[Node],
+        rest: &'p [Node],
+        cont: Option<&Cont<'p, '_>>,
         pos: usize,
         captures: &mut Vec<SlotCapture>,
         slot: Option<&Slot>,
     ) -> Option<usize> {
-        for take in 1..=self.tokens.len().saturating_sub(pos) {
+        // A slot cannot eat tokens that the rest of the pattern still needs, and
+        // since the match must now reach the end of the line, "the rest" is
+        // exactly known. Without this bound every trailing slot walks 1..N and
+        // fails N-1 times before taking the whole tail — the single hottest path
+        // there is, because most patterns end in a slot.
+        let available = self.tokens.len().saturating_sub(pos);
+        let reserved = min_tokens(rest, cont);
+        let most = available.checked_sub(reserved).filter(|take| *take > 0)?;
+
+        for take in 1..=most {
             self.steps += 1;
             if self.steps > STEP_BUDGET {
                 return None;
@@ -241,7 +300,7 @@ impl State<'_> {
                 });
             }
 
-            if let Some(finish) = self.match_nodes(rest, end, captures) {
+            if let Some(finish) = self.match_nodes(rest, cont, end, captures) {
                 return Some(finish);
             }
             captures.truncate(mark);
@@ -357,5 +416,100 @@ mod tests {
         let pattern = "%objects% %objects% %objects% %objects% %objects% %objects%";
         let line = "a b c d e f g h i j k l m n o p q r s t u v w x y z";
         let _ = matched(pattern, line); // must simply return, quickly
+    }
+}
+
+#[cfg(test)]
+mod whole_line_regressions {
+    use super::*;
+    use crate::pattern::Pattern;
+
+    fn matches(pattern: &str, line: &str) -> bool {
+        match_pattern(&Pattern::parse(pattern).unwrap(), line).is_some()
+    }
+
+    #[test]
+    fn a_trailing_slot_may_consume_more_than_one_token() {
+        // The whole-line requirement used to be tested *after* the search
+        // returned, so a pattern ending in a slot took the first token it could
+        // and then failed the length check with no chance to backtrack. Every
+        // one of these is ordinary Skript that silently classified as nothing.
+        assert!(matches("wait [for] %timespan%", "wait 3 seconds"));
+        assert!(matches("loop %objects%", "loop all players"));
+        assert!(matches(
+            "set %~objects% to %objects%",
+            "set {_x} to player's location"
+        ));
+        assert!(matches("%objects%", "one two three four"));
+    }
+
+    #[test]
+    fn a_pattern_still_has_to_cover_the_whole_line() {
+        // The other half: backtracking must not let a pattern match a prefix.
+        assert!(!matches("stop", "stop the music"));
+        assert!(!matches("cancel [the] event", "cancel the event now"));
+        assert!(!matches("%objects% has passed", "{_d} has passed already"));
+
+        // Note what is deliberately *not* asserted here: a pattern ending in a
+        // slot really does swallow a trailing tail, because slots are untyped —
+        // `%timespan%` will take any four tokens. Slot types are documentation,
+        // not validation, and enforcing them would mean rejecting every line
+        // built from an expression this server cannot evaluate. The whole-line
+        // rule only constrains what a *literal* has to line up with.
+        assert!(matches("wait [for] %timespan%", "wait 3 seconds then go"));
+    }
+
+    #[test]
+    fn captures_are_the_text_the_slot_actually_took() {
+        let matched = match_pattern(
+            &Pattern::parse("give %~objects% %objects%").unwrap(),
+            "give the player 3 gold ingots",
+        )
+        .expect("should match");
+        let texts: Vec<&str> = matched.captures.iter().map(|c| c.text.as_str()).collect();
+        // Shortest-first means the leading slot yields as little as it can.
+        assert_eq!(texts, vec!["the", "player 3 gold ingots"]);
+    }
+}
+
+#[cfg(test)]
+mod glued_group_regressions {
+    use super::*;
+    use crate::pattern::Pattern;
+
+    fn matches(pattern: &str, line: &str) -> bool {
+        match_pattern(&Pattern::parse(pattern).unwrap(), line).is_some()
+    }
+
+    #[test]
+    fn a_group_glued_to_a_word_matches_the_whole_word() {
+        // 38% of Skript's published patterns write a group flush against a word.
+        // Matching is token-based, so these only work because `fuse_glued`
+        // spells the run out at parse time.
+        assert!(matches(
+            "[the] event is cancel[l]ed",
+            "the event is cancelled"
+        ));
+        assert!(matches("[the] event is cancel[l]ed", "event is canceled"));
+        assert!(matches("%objects% ha(s|ve) passed", "{_d} has passed"));
+        assert!(matches("%objects% ha(s|ve) passed", "{_d} have passed"));
+        assert!(matches("[right|left]click[ing]", "rightclick"));
+        assert!(matches("[right|left]click[ing]", "leftclicking"));
+        assert!(matches("[right|left]click[ing]", "click"));
+        assert!(matches("%objects% block[s]", "{_x} blocks"));
+    }
+
+    #[test]
+    fn a_glued_group_does_not_match_across_a_space() {
+        // `block[s]` is one word; it must not also accept `block s`.
+        assert!(!matches("%objects% block[s]", "{_x} block s"));
+    }
+
+    #[test]
+    fn spacing_still_separates_ordinary_groups() {
+        // `[the] event` is written with a space, so it must stay two nodes.
+        assert!(matches("[the] event", "the event"));
+        assert!(matches("[the] event", "event"));
+        assert!(!matches("[the] event", "theevent"));
     }
 }

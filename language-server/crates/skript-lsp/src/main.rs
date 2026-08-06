@@ -213,6 +213,11 @@ impl LanguageServer for Backend {
                     for message in &loaded.messages {
                         client.log_message(MessageType::INFO, message).await;
                     }
+                    // A pop-up, not a log line: the log pane is not somewhere a
+                    // first-time user thinks to look when completion is empty.
+                    if let Some(warning) = &loaded.degraded {
+                        client.show_message(MessageType::WARNING, warning).await;
+                    }
                     let mut state = state.write().await;
                     state.catalog = Some(loaded.catalog);
                     state.uninstalled = loaded.uninstalled;
@@ -292,6 +297,8 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".into(), ",".into()]),
                     retrigger_characters: Some(vec![",".into()]),
@@ -491,7 +498,11 @@ impl LanguageServer for Backend {
         };
         let line = document.line(position.line);
         let code = line.trim().trim_end_matches(':');
-        let Some((id, _)) = catalog.classify_best(code) else {
+        // Same role filter as semantic tokens and diagnostics — hovering a line
+        // must never claim it is the "Creature/Entity/Player/…" expression just
+        // because that pattern is `[the] [event-]<.+>` and matches anything.
+        let role = skript_docs::LineRole::from_indent(line.len() - line.trim_start().len());
+        let Some((id, _)) = catalog.classify_line(code, role) else {
             return Ok(None);
         };
         let Some(mut text) = catalog.hover(id) else {
@@ -617,6 +628,123 @@ impl LanguageServer for Backend {
         Ok(Some(locations))
     }
 
+    /// Highlights every other use of the symbol under the cursor.
+    ///
+    /// Restricted to the current file by definition of the request, so it does
+    /// not need the workspace scope rules — but it does need the same
+    /// `symbol_under_cursor` resolution as go-to-definition, or the editor would
+    /// highlight a different symbol than F12 navigates to.
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> RpcResult<Option<Vec<DocumentHighlight>>> {
+        let state = self.state.read().await;
+        let uri = params
+            .text_document_position_params
+            .text_document
+            .uri
+            .to_string();
+        let Some(document) = state.workspace.get(&uri) else {
+            return Ok(None);
+        };
+
+        let position = from_lsp_position(
+            document.text(),
+            params.text_document_position_params.position,
+            state.encoding,
+        );
+        let Some((kind, name)) = symbol_under_cursor(document, position) else {
+            return Ok(None);
+        };
+
+        let mut out = Vec::new();
+        for symbol in document.symbols().flat() {
+            if kinds_alike(kind, symbol.kind) && symbol.name == name {
+                out.push(DocumentHighlight {
+                    range: to_lsp_range(document.text(), symbol.selection_range, state.encoding),
+                    kind: Some(DocumentHighlightKind::WRITE),
+                });
+            }
+        }
+        for reference in &document.symbols().references {
+            if kinds_alike(kind, reference.kind) && reference.name == name {
+                out.push(DocumentHighlight {
+                    range: to_lsp_range(document.text(), reference.range, state.encoding),
+                    kind: Some(DocumentHighlightKind::READ),
+                });
+            }
+        }
+
+        Ok((!out.is_empty()).then_some(out))
+    }
+
+    /// Parameter-name hints at function call sites.
+    ///
+    /// Skript's call syntax carries no argument names, so `giveKit(p, 3, true)`
+    /// is unreadable without opening the declaration. This is the one place the
+    /// index already knows something the source does not show.
+    async fn inlay_hint(&self, params: InlayHintParams) -> RpcResult<Option<Vec<InlayHint>>> {
+        let state = self.state.read().await;
+        let uri = params.text_document.uri.to_string();
+        let Some(document) = state.workspace.get(&uri) else {
+            return Ok(None);
+        };
+
+        let from = from_lsp_position(document.text(), params.range.start, state.encoding);
+        let to = from_lsp_position(document.text(), params.range.end, state.encoding);
+
+        let mut hints = Vec::new();
+        for reference in &document.symbols().references {
+            if reference.kind != SymbolKind::Function {
+                continue;
+            }
+            let line = reference.range.start.line;
+            if line < from.line || line > to.line {
+                continue;
+            }
+
+            // The declaration is the only source of parameter names. A call to
+            // an unknown function gets no hints rather than invented ones.
+            let Some((target, symbol)) = state
+                .workspace
+                .definitions(SymbolKind::Function, &reference.name, &uri)
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            let names = parameter_names(&symbol.detail);
+            if names.is_empty() {
+                continue;
+            }
+            let _ = target;
+
+            let text = document.text();
+            for (index, offset) in argument_offsets(text, line, reference.range.end.character)
+                .into_iter()
+                .enumerate()
+            {
+                let Some(name) = names.get(index) else { break };
+                hints.push(InlayHint {
+                    position: convert::to_lsp_position(
+                        text,
+                        skript_index::Position::new(line, offset),
+                        state.encoding,
+                    ),
+                    label: InlayHintLabel::String(format!("{name}:")),
+                    kind: Some(InlayHintKind::PARAMETER),
+                    text_edits: None,
+                    tooltip: None,
+                    padding_left: Some(false),
+                    padding_right: Some(true),
+                    data: None,
+                });
+            }
+        }
+
+        Ok(Some(hints))
+    }
+
     async fn prepare_rename(
         &self,
         params: TextDocumentPositionParams,
@@ -708,11 +836,17 @@ impl LanguageServer for Backend {
         );
 
         let line = document.line(position.line);
-        let prefix = &line[..(position.character as usize).min(line.len())];
+        let prefix = convert::line_prefix(line, position.character);
         let mut items = Vec::new();
 
         // Declared symbols always come first: they are the user's own code.
-        for (_, symbol) in state.workspace.workspace_symbols("") {
+        //
+        // Scoped to what Skript would actually resolve from this file. Using the
+        // project-wide symbol list here offered another script's `{_local}`
+        // variables and options in every trigger — names that cannot resolve, so
+        // accepting one produced code that silently did nothing.
+        let mut seen = std::collections::HashSet::new();
+        for (_, symbol) in state.workspace.symbols_in_scope(&uri) {
             let kind = match symbol.kind {
                 SymbolKind::Function | SymbolKind::LocalFunction => CompletionItemKind::FUNCTION,
                 SymbolKind::Command => CompletionItemKind::METHOD,
@@ -722,6 +856,10 @@ impl LanguageServer for Backend {
                 }
                 _ => continue,
             };
+            // The same global is declared in as many files as assign to it.
+            if !seen.insert((symbol.kind, symbol.name.clone())) {
+                continue;
+            }
             items.push(CompletionItem {
                 label: symbol.name.clone(),
                 kind: Some(kind),
@@ -847,7 +985,7 @@ impl LanguageServer for Backend {
             state.encoding,
         );
         let line = document.line(position.line);
-        let prefix = &line[..(position.character as usize).min(line.len())];
+        let prefix = convert::line_prefix(line, position.character);
 
         let Some((name, argument)) = enclosing_call(prefix) else {
             return Ok(None);
@@ -929,7 +1067,7 @@ impl LanguageServer for Backend {
         let encoding = state.encoding;
         // Indexed once for the whole response rather than rescanned per token.
         let lines = convert::LineIndex::new(text);
-        let data = semantic::tokens(catalog, text, |line, byte| {
+        let data = semantic::tokens(catalog, text, document.symbols(), |line, byte| {
             lines.to_column(line, byte, encoding)
         });
 
@@ -1006,6 +1144,146 @@ fn renameable(kind: SymbolKind) -> bool {
             | SymbolKind::GlobalVariable
             | SymbolKind::LocalVariable
     )
+}
+
+/// Whether two symbol kinds refer to the same thing for highlighting.
+///
+/// Mirrors `Workspace`'s own rule: a `function` and a `local function` are one
+/// symbol from a lookup's point of view, as are the two variable scopes.
+fn kinds_alike(wanted: SymbolKind, found: SymbolKind) -> bool {
+    if wanted.is_function() && found.is_function() {
+        return true;
+    }
+    if wanted.is_variable() && found.is_variable() {
+        return wanted == found;
+    }
+    wanted == found
+}
+
+/// Parameter names out of a function's rendered signature.
+///
+/// The index stores the signature as text — `(who: player, amount: number = 1)
+/// :: text` — because Skript has no type model worth building one for. Reading
+/// the names back out is cheaper than threading a structured parameter list
+/// through the whole index for this one feature.
+fn parameter_names(detail: &str) -> Vec<String> {
+    let Some(open) = detail.find('(') else {
+        return Vec::new();
+    };
+    // The *matching* close paren, not the first one: a parenthesised default
+    // such as `xs: integers = (1, 7)` closes before the parameter list does, and
+    // stopping there silently truncated every parameter after it.
+    let mut depth = 0usize;
+    let mut close = None;
+    for (offset, ch) in detail[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        return Vec::new();
+    };
+    let inside = &detail[open + 1..close];
+
+    let mut names = Vec::new();
+    let mut depth = 0usize;
+    let mut current = String::new();
+    for ch in inside.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            // Only a top-level comma separates parameters; one inside a
+            // parenthesised default such as `= (1, 7)` does not.
+            ',' if depth == 0 => {
+                names.push(std::mem::take(&mut current));
+            }
+            _ => current.push(ch),
+        }
+    }
+    names.push(current);
+
+    names
+        .into_iter()
+        .map(|part| {
+            part.split(':')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        })
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// Byte columns at which each argument of a call starts.
+///
+/// `after_name` is the column just past the function name, so the `(` is the
+/// next thing on the line. Strings and nested parens are skipped so that a comma
+/// inside `"a, b"` or inside `f(1, 2)` does not split an argument.
+fn argument_offsets(text: &str, line: u32, after_name: u32) -> Vec<u32> {
+    let Some(source) = text.lines().nth(line as usize) else {
+        return Vec::new();
+    };
+    let bytes = source.as_bytes();
+    let mut index = after_name as usize;
+
+    while index < bytes.len() && bytes[index] != b'(' {
+        // Anything other than whitespace between the name and the paren means
+        // this is not the call we were told it is.
+        if !bytes[index].is_ascii_whitespace() {
+            return Vec::new();
+        }
+        index += 1;
+    }
+    if index >= bytes.len() {
+        return Vec::new();
+    }
+    index += 1;
+
+    let mut offsets = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut expecting = true;
+
+    while index < bytes.len() {
+        let ch = bytes[index];
+        if in_string {
+            if ch == b'"' {
+                in_string = false;
+            }
+            index += 1;
+            continue;
+        }
+        match ch {
+            b'"' => in_string = true,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' if depth == 0 => break,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => expecting = true,
+            _ => {}
+        }
+        if expecting && !ch.is_ascii_whitespace() && !matches!(ch, b',') {
+            offsets.push(index as u32);
+            expecting = false;
+        }
+        index += 1;
+    }
+
+    offsets
 }
 
 fn symbol_under_cursor(
@@ -1217,6 +1495,41 @@ struct Loaded {
     uninstalled: Option<Catalog>,
     detection: Detection,
     messages: Vec<String>,
+    /// Set when the syntax database could not be loaded and the tiny built-in
+    /// catalog took over. Carried separately from `messages` because this one
+    /// has to be *shown* to the user, not logged: the fallback has no events,
+    /// expressions or conditions at all, so hover and completion go quiet, and
+    /// a silent degradation reads exactly like a broken extension.
+    degraded: Option<String>,
+}
+
+/// Where the downloaded syntax databases are cached.
+///
+/// Deliberately not the temp directory. `std::env::temp_dir()` is `/tmp` on
+/// Linux unless `$TMPDIR` says otherwise, and `/tmp/skript-lsp` is a fixed,
+/// predictable name in a world-writable sticky directory: any other local user
+/// can create it first and leave a crafted `docs-latest.json` there, which the
+/// server would then load as the authoritative description of the language.
+/// `/tmp` is also swept by systemd-tmpfiles, which defeats the 24-hour cache TTL
+/// and re-downloads roughly 9 MB far more often than intended.
+///
+/// Falls back to the temp directory only when the platform's cache location
+/// cannot be determined, since a poor cache still beats refusing to start.
+fn cache_directory() -> std::path::PathBuf {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Library/Caches"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+            })
+    };
+
+    base.unwrap_or_else(std::env::temp_dir).join("skript-lsp")
 }
 
 /// Detects the project's addons, then builds the catalog from every source.
@@ -1225,7 +1538,7 @@ struct Loaded {
 /// duplicate copies of core syntax lose the id-based dedup to the authoritative
 /// entries.
 fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded {
-    let cache_dir = std::env::temp_dir().join("skript-lsp");
+    let cache_dir = cache_directory();
     let mut messages = Vec::new();
 
     // ---- 1. what is installed ------------------------------------------
@@ -1249,20 +1562,21 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
     }
 
     // ---- 2. core Skript -------------------------------------------------
-    let (mut docs, mut fell_back) =
-        match skript_docs::source::load(&settings.docs_source(), &cache_dir) {
-            Ok(docs) => (docs, false),
-            Err(error) => {
-                messages.push(format!(
-                    "could not load the Skript syntax database ({error}); falling back to the \
-                 built-in catalog. Highlighting, outline, folding, go-to-definition and rename \
-                 still work; hover and completion will be limited."
-                ));
-                (skript_docs::fallback_docs(), true)
-            }
-        };
+    let (mut docs, degraded) = match skript_docs::source::load(&settings.docs_source(), &cache_dir)
+    {
+        Ok(docs) => (docs, None),
+        Err(error) => {
+            let warning = format!(
+                "Skript syntax database unavailable ({error}). Highlighting, indentation, \
+                 folding, outline, go-to-definition and rename all still work — but hover and \
+                 completion need the database and will be nearly empty until it downloads. \
+                 Check your connection and restart the language server."
+            );
+            (skript_docs::fallback_docs(), Some(warning))
+        }
+    };
 
-    if !fell_back {
+    if degraded.is_none() {
         messages.push(format!(
             "loaded Skript {} syntax: {} entries, {} patterns",
             docs.source.version,
@@ -1341,9 +1655,6 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
         }
     }
 
-    fell_back = false;
-    let _ = fell_back;
-
     docs.resolve_versions();
     let catalog = Catalog::build(docs).with_target_version(target_version);
 
@@ -1356,6 +1667,7 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
         uninstalled,
         detection,
         messages,
+        degraded,
     }
 }
 
@@ -1453,5 +1765,54 @@ mod tests {
             lsp_symbol_kind(SymbolKind::Function),
             tower_lsp::lsp_types::SymbolKind::FUNCTION
         );
+    }
+}
+
+#[cfg(test)]
+mod inlay_hint_helpers {
+    use super::{argument_offsets, parameter_names};
+
+    #[test]
+    fn parameter_names_come_out_of_a_rendered_signature() {
+        assert_eq!(
+            parameter_names("(who: player, amount: number = 1) :: text"),
+            vec!["who", "amount"]
+        );
+        assert_eq!(parameter_names("() :: boolean"), Vec::<String>::new());
+        assert_eq!(parameter_names("no parens at all"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_comma_inside_a_parenthesised_default_is_not_a_separator() {
+        // `(xs: integers = (1, 7), flag: boolean)` is two parameters, not three.
+        assert_eq!(
+            parameter_names("(xs: integers = (1, 7), flag: boolean)"),
+            vec!["xs", "flag"]
+        );
+    }
+
+    #[test]
+    fn argument_offsets_point_at_each_argument() {
+        //          0         1         2
+        //          0123456789012345678901234
+        let line = "\tset {_x} to greet(a, b)";
+        // `greet` ends at column 18.
+        let offsets = argument_offsets(line, 0, 18);
+        assert_eq!(offsets.len(), 2);
+        assert_eq!(&line[offsets[0] as usize..offsets[0] as usize + 1], "a");
+        assert_eq!(&line[offsets[1] as usize..offsets[1] as usize + 1], "b");
+    }
+
+    #[test]
+    fn a_comma_inside_a_string_or_a_nested_call_does_not_split() {
+        let line = "greet(\"a, b\", f(1, 2), c)";
+        let offsets = argument_offsets(line, 0, 5);
+        assert_eq!(offsets.len(), 3, "got {offsets:?}");
+    }
+
+    #[test]
+    fn a_name_not_followed_by_a_paren_yields_nothing() {
+        // Guards against hinting on something that only looked like a call.
+        assert!(argument_offsets("set {_x} to 5", 0, 3).is_empty());
     }
 }

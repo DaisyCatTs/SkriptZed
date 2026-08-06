@@ -286,12 +286,17 @@ fn check_catalog(
         }
         let code = trimmed.trim_end_matches(':');
         let indent = (raw.len() - raw.trim_start().len()) as u32;
+        // Indentation says whether this line opens a structure or sits inside
+        // one, which rules out the categories that could never explain it.
+        // Without that filter the three catch-all expressions match every line
+        // ever written and nothing is reportable as unknown.
+        let role = skript_docs::LineRole::from_indent(indent as usize);
         let range = Range::new(
             Position::new(number as u32, indent),
             Position::new(number as u32, raw.trim_end().len() as u32),
         );
 
-        match catalog.classify_best(code) {
+        match catalog.classify_line(code, role) {
             Some((id, _)) => {
                 if !options.deprecated_syntax {
                     continue;
@@ -319,7 +324,7 @@ fn check_catalog(
                 // "unknown syntax", and it is only sayable because detection
                 // told us what is actually installed.
                 let from_addon = uninstalled
-                    .and_then(|rest| rest.classify_best(code))
+                    .and_then(|rest| rest.classify_line(code, role))
                     .and_then(|(id, _)| rest_entry_addon(uninstalled?, id));
 
                 if let Some((addon, since)) = from_addon {

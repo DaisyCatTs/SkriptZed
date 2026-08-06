@@ -335,6 +335,17 @@ module.exports = grammar({
       $.loop_value,
       $.event_value,
       $.command_arg_ref,
+      // `&6[Server]&r` in an `options:` value, a `description:` / `usage:`
+      // entry, or an alias definition has no enclosing string, and used to lex
+      // as `operator(&) number(6)` — mis-tokenised, not merely uncoloured, in
+      // the single commonest place people write colour codes.
+      //
+      // The token is unchanged from its use inside `string`: it already
+      // requires the code character *immediately* after the `&`, so `a & b` and
+      // `&&` still lex as the operator. Listed before `$.operator` because
+      // tree-sitter breaks precedence-and-length ties by rule order.
+      $.legacy_color,
+      alias($._bare_format_tag, $.format_tag),
       $.identifier,
       $.word,
       $.operator,
@@ -381,6 +392,33 @@ module.exports = grammar({
 
     // `<red>`, `<bold>`, `<#FF00AA>`, `<link:https://…>`, `<tooltip:hi>`
     format_tag: _ => token(prec(2, seq('<', /[^<>%"\n]*/, '>'))),
+
+    // `<red>`, `<#FF00AA>`, `<link:…>` *outside* a string — a `description:`
+    // value, an `options:` value, an alias definition.
+    //
+    // Deliberately far stricter than `format_tag`, which is only ever reached
+    // inside a string where `<` cannot be an operator. Out here `<` is also
+    // Skript's less-than, and `format_tag`'s `[^<>%"\n]*` body would happily
+    // swallow `< 5 and {_b} >` out of `if {_a} < 5 and {_b} > 3:`. So the tag
+    // must open with a tag character *immediately* after the `<`, and the name
+    // may not contain whitespace — every `<` comparison in the 540-file corpus
+    // is written `< ` with a space, and every real tag is written without one.
+    //
+    // The body excludes `<`, `>`, `"`, `{`, `}` and newline, so a tag can never
+    // span two tags, swallow a string or a variable, or cross a line into a
+    // section colon.
+    //
+    // prec(1), not prec(2): it must beat `operator` (prec 0) but lose to
+    // `command_argument`'s `<` (prec 3), so a command header's argument
+    // delimiter is never re-read as a tag.
+    _bare_format_tag: _ => token(prec(1, seq(
+      '<',
+      optional(/[/!]/),
+      /[a-zA-Z#]/,
+      /[a-zA-Z0-9_#.\-]*/,
+      optional(seq(':', /[^<>"{}\n]*/)),
+      '>',
+    ))),
 
     // Legacy `&6` codes and `&#RRGGBB` hex colours.
     legacy_color: _ => token(prec(2, choice(

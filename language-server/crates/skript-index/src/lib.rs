@@ -148,6 +148,9 @@ impl Workspace {
     ///     in its own trigger, but the index does not model triggers, and
     ///     over-reporting inside one file is far less harmful than missing a
     ///     definition);
+    ///   * an `{@option}` is only visible in its own file — options are
+    ///     declared in a script's own `options:` block and substituted before
+    ///     parsing, so two scripts may use the same name for different values;
     ///   * everything else is workspace-wide.
     pub fn definitions(
         &self,
@@ -162,10 +165,7 @@ impl Workspace {
                 if !kinds_match(kind, symbol.kind) || symbol.name != name {
                     continue;
                 }
-                let file_local = matches!(
-                    symbol.kind,
-                    SymbolKind::LocalFunction | SymbolKind::LocalVariable
-                );
+                let file_local = is_file_local(symbol.kind);
                 if file_local && !same_file {
                     continue;
                 }
@@ -182,7 +182,11 @@ impl Workspace {
         name: &str,
         from_uri: &str,
     ) -> Vec<(&Document, &Reference)> {
-        let file_local = matches!(kind, SymbolKind::LocalVariable);
+        // Must agree with `definitions`. When it did not, a `local function`'s
+        // references were gathered workspace-wide while its definition was
+        // correctly confined to one file — so renaming it silently rewrote an
+        // unrelated call in another script.
+        let file_local = is_file_local(kind);
         let mut out = Vec::new();
         for document in self.documents.values() {
             if file_local && document.uri() != from_uri {
@@ -210,6 +214,14 @@ impl Workspace {
         }
         out
     }
+}
+
+/// Symbols that only exist inside the file that declares them.
+fn is_file_local(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::LocalFunction | SymbolKind::LocalVariable | SymbolKind::Option
+    )
 }
 
 /// `Function` and `LocalFunction` are the same symbol from a lookup's point of
@@ -410,5 +422,115 @@ mod discovery_tests {
     #[test]
     fn a_missing_directory_yields_nothing_rather_than_panicking() {
         assert!(discover_scripts(std::path::Path::new("/no/such/place")).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod scope_regressions {
+    use super::*;
+
+    #[test]
+    fn a_local_functions_references_stay_in_its_own_file() {
+        // Regression: `references` omitted LocalFunction from its file-local
+        // set while `definitions` included it, so renaming a local function
+        // rewrote a same-named call in an unrelated script.
+        let mut workspace = Workspace::new();
+        workspace.open("file:///lib.sk", "local function helper():\n\treturn 1\n");
+        workspace.open("file:///use.sk", "on join:\n\tset {_x} to helper()\n");
+
+        let references =
+            workspace.references(SymbolKind::LocalFunction, "helper", "file:///lib.sk");
+        assert!(
+            references
+                .iter()
+                .all(|(document, _)| document.uri() == "file:///lib.sk"),
+            "a local function's references leaked out of its file: {:?}",
+            references.iter().map(|(d, _)| d.uri()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn options_are_script_local() {
+        // `{@option}` is substituted from the declaring script's own `options:`
+        // block, so two scripts may use one name for different values.
+        let mut workspace = Workspace::new();
+        workspace.open("file:///a.sk", "options:\n\tprefix: &6[A]\n");
+        workspace.open("file:///b.sk", "options:\n\tprefix: &6[B]\n");
+
+        let definitions = workspace.definitions(SymbolKind::Option, "prefix", "file:///a.sk");
+        assert_eq!(
+            definitions.len(),
+            1,
+            "go-to-definition on an option offered a jump into another script"
+        );
+        assert_eq!(definitions[0].0.uri(), "file:///a.sk");
+    }
+}
+
+#[cfg(test)]
+mod rename_regressions {
+    use super::*;
+
+    /// The text a rename would produce, applying every edit back-to-front so
+    /// earlier offsets stay valid.
+    fn rename_in(source: &str, kind: SymbolKind, name: &str, new_name: &str) -> String {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+
+        let mut edits: Vec<Range> = Vec::new();
+        for (_, symbol) in workspace.definitions(kind, name, "file:///t.sk") {
+            edits.push(symbol.selection_range);
+        }
+        for (_, reference) in workspace.references(kind, name, "file:///t.sk") {
+            edits.push(reference.name_range);
+        }
+        edits.sort_by_key(|range| (range.start.line, range.start.character));
+        edits.dedup();
+
+        let mut lines: Vec<String> = source.lines().map(str::to_string).collect();
+        for range in edits.iter().rev() {
+            let line = &mut lines[range.start.line as usize];
+            let start = range.start.character as usize;
+            let end = (range.end.character as usize).min(line.len());
+            line.replace_range(start..end, new_name);
+        }
+        lines.join("\n")
+    }
+
+    #[test]
+    fn renaming_a_default_variable_keeps_its_braces() {
+        // Regression: the declaration's selection range covered `{score}`, so
+        // the rename wrote `total = 0` and broke the script.
+        let out = rename_in(
+            "variables:\n\t{score} = 0\n",
+            SymbolKind::GlobalVariable,
+            "score",
+            "total",
+        );
+        assert!(out.contains("{total} = 0"), "got:\n{out}");
+    }
+
+    #[test]
+    fn renaming_a_list_variable_keeps_its_list_suffix() {
+        // Regression: the replacement was rebuilt as `{` + new name + `}`,
+        // which silently turned a list variable into a scalar.
+        let out = rename_in(
+            "on join:\n\tset {score::*} to 1\n",
+            SymbolKind::GlobalVariable,
+            "score::*",
+            "total::*",
+        );
+        assert!(out.contains("{total::*}"), "the `::*` was lost:\n{out}");
+    }
+
+    #[test]
+    fn renaming_a_local_variable_keeps_its_underscore() {
+        let out = rename_in(
+            "on join:\n\tset {_count} to 1\n",
+            SymbolKind::LocalVariable,
+            "count",
+            "total",
+        );
+        assert!(out.contains("{_total}"), "the scope sigil was lost:\n{out}");
     }
 }

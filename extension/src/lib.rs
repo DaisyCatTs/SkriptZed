@@ -300,10 +300,11 @@ fn newest_local_install() -> Option<String> {
         .filter(|name| name.starts_with("skript-lsp-"))
         .collect();
 
-    // Lexical order is a good enough proxy for recency across our own
-    // version-stamped directory names, and the newest is tried first.
-    candidates.sort();
-    candidates.reverse();
+    // Compare version components numerically. Sorting the directory names
+    // lexically put `skript-lsp-0.9.0` above `skript-lsp-0.10.0`, so once the
+    // minor version reached double digits the offline fallback would launch an
+    // older server than the one installed.
+    candidates.sort_by_key(|name| std::cmp::Reverse(version_key(name)));
 
     candidates.into_iter().find_map(|dir| {
         let path = format!("{dir}/{}", exe_name("skript-lsp"));
@@ -311,6 +312,18 @@ fn newest_local_install() -> Option<String> {
             .is_ok_and(|stat| stat.is_file())
             .then_some(path)
     })
+}
+
+/// The numeric version components of a `skript-lsp-<version>` directory name.
+///
+/// Anything unparseable sorts lowest, so a stray directory never wins.
+fn version_key(directory: &str) -> Vec<u64> {
+    directory
+        .trim_start_matches("skript-lsp-")
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse().ok())
+        .collect()
 }
 
 fn update_check_marker() -> &'static str {

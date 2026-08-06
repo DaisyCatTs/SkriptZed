@@ -143,6 +143,15 @@ impl Category {
         }
     }
 
+    /// The inverse of [`Category::label`], for round-tripping through a
+    /// completion item's `data` field.
+    pub fn from_label(label: &str) -> Option<Category> {
+        Category::ALL
+            .iter()
+            .copied()
+            .find(|category| category.label() == label)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Category::Condition => "condition",

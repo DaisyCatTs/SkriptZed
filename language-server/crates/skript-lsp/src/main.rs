@@ -28,7 +28,7 @@ use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use convert::{from_lsp_position, to_lsp_position, to_lsp_range, Encoding};
+use convert::{from_lsp_position, to_lsp_range, Encoding};
 
 struct Backend {
     client: Client,
@@ -298,6 +298,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 }),
                 completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(true),
                     trigger_characters: Some(vec!["{".into(), "@".into(), "%".into(), " ".into()]),
                     ..Default::default()
                 }),
@@ -346,7 +347,28 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        self.state.write().await.workspace.close(&uri);
+
+        // Closing a tab must not remove the file from the project index. The
+        // same `Workspace` holds every `.sk` found on disk at startup, so
+        // evicting the entry made functions in that file "undefined" for every
+        // other open script the moment its tab was closed.
+        //
+        // Re-reading from disk also discards any unsaved edits, which is
+        // exactly right: the buffer is gone, the file is what remains.
+        let on_disk = params
+            .text_document
+            .uri
+            .to_file_path()
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+
+        {
+            let mut state = self.state.write().await;
+            match on_disk {
+                Some(text) => state.workspace.update(&uri, text),
+                None => state.workspace.close(&uri),
+            }
+        }
         // Clear the file's diagnostics, or they linger in the problems panel.
         self.client
             .publish_diagnostics(params.text_document.uri, Vec::new(), None)
@@ -363,11 +385,12 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
+        let lines = convert::LineIndex::new(document.text());
         let symbols = document
             .symbols()
             .symbols
             .iter()
-            .map(|symbol| to_document_symbol(symbol, document.text(), state.encoding))
+            .map(|symbol| to_document_symbol(symbol, &lines, state.encoding))
             .collect();
 
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
@@ -604,6 +627,8 @@ impl LanguageServer for Backend {
         };
         let position = from_lsp_position(document.text(), params.position, state.encoding);
 
+        // Both branches offer the *name* range, so the box the editor opens is
+        // pre-filled with `score` rather than `{score::*}`.
         if let Some(symbol) = document.symbols().declaration_at(position) {
             if renameable(symbol.kind) {
                 return Ok(Some(PrepareRenameResponse::Range(to_lsp_range(
@@ -617,7 +642,7 @@ impl LanguageServer for Backend {
             if renameable(reference.kind) {
                 return Ok(Some(PrepareRenameResponse::Range(to_lsp_range(
                     document.text(),
-                    reference.range,
+                    reference.name_range,
                     state.encoding,
                 ))));
             }
@@ -642,6 +667,10 @@ impl LanguageServer for Backend {
 
         let mut changes: std::collections::HashMap<Url, Vec<TextEdit>> = Default::default();
 
+        // Declarations and references are edited identically, because both now
+        // carry a range covering just the name. Reconstructing a variable's
+        // syntax from a prefix instead used to write `total = 0` over
+        // `{score} = 0`, and to drop the `::*` from a list variable.
         for (target, symbol) in state.workspace.definitions(kind, &name, &uri) {
             if let Ok(target_uri) = Url::parse(target.uri()) {
                 changes.entry(target_uri).or_default().push(TextEdit {
@@ -653,34 +682,10 @@ impl LanguageServer for Backend {
 
         for (target, reference) in state.workspace.references(kind, &name, &uri) {
             if let Ok(target_uri) = Url::parse(target.uri()) {
-                // A variable reference includes its braces and scope sigil, so
-                // only the name inside them may be replaced.
-                let (range, new_text) = if kind.is_variable() {
-                    let text = target.text();
-                    let line = text
-                        .lines()
-                        .nth(reference.range.start.line as usize)
-                        .unwrap_or("");
-                    let raw = &line[reference.range.start.character as usize
-                        ..(reference.range.end.character as usize).min(line.len())];
-                    let prefix: String = raw
-                        .chars()
-                        .take_while(|ch| matches!(ch, '{' | '_' | '-'))
-                        .collect();
-                    (
-                        to_lsp_range(target.text(), reference.range, state.encoding),
-                        format!("{prefix}{}{}", params.new_name, "}"),
-                    )
-                } else {
-                    (
-                        to_lsp_range(target.text(), reference.range, state.encoding),
-                        params.new_name.clone(),
-                    )
-                };
-                changes
-                    .entry(target_uri)
-                    .or_default()
-                    .push(TextEdit { range, new_text });
+                changes.entry(target_uri).or_default().push(TextEdit {
+                    range: to_lsp_range(target.text(), reference.name_range, state.encoding),
+                    new_text: params.new_name.clone(),
+                });
             }
         }
 
@@ -763,9 +768,12 @@ impl LanguageServer for Backend {
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some(detail),
                         sort_text: Some(format!("{rank}{}", entry.name)),
-                        documentation: Some(Documentation::MarkupContent(markdown(
-                            skript_docs::hover::render(category, entry),
-                        ))),
+                        // Rendering every entry's Markdown card here meant
+                        // thousands of documents rebuilt on each keystroke —
+                        // and " " is a completion trigger, so that was every
+                        // space typed. The client asks for the one item it
+                        // actually shows via `completionItem/resolve`.
+                        data: Some(serde_json::json!([category.label(), id.index])),
                         insert_text: Some(snippet_for(pattern)),
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
                         tags: entry
@@ -804,11 +812,16 @@ impl LanguageServer for Backend {
         // One edit spanning the document. Skript's indentation is its syntax,
         // so partial edits applied out of order could change which block a line
         // belongs to.
-        let last_line = document.text().lines().count() as u32;
+        //
+        // The end is the start of the line *after* the last one, which for a
+        // document of N lines is line N. Going further (N + 1) is out of range,
+        // and a client that does not clamp rejects the edit outright — so
+        // formatting would silently do nothing.
+        let line_count = document.text().lines().count() as u32;
         Ok(Some(vec![TextEdit {
             range: Range {
                 start: Position::new(0, 0),
-                end: Position::new(last_line + 1, 0),
+                end: Position::new(line_count, 0),
             },
             new_text: formatted,
         }]))
@@ -873,6 +886,33 @@ impl LanguageServer for Backend {
         }))
     }
 
+    async fn completion_resolve(&self, mut item: CompletionItem) -> RpcResult<CompletionItem> {
+        // Only the item the user is actually looking at gets a rendered card.
+        let Some(data) = item.data.take() else {
+            return Ok(item);
+        };
+        let state = self.state.read().await;
+        let Some(catalog) = &state.catalog else {
+            return Ok(item);
+        };
+
+        let parsed: Option<(String, usize)> = serde_json::from_value(data).ok();
+        let Some((label, index)) = parsed else {
+            return Ok(item);
+        };
+        let Some(category) = Category::from_label(&label) else {
+            return Ok(item);
+        };
+
+        let id = skript_docs::EntryId { category, index };
+        if let Some(entry) = catalog.entry(id) {
+            item.documentation = Some(Documentation::MarkupContent(markdown(
+                skript_docs::hover::render(category, entry),
+            )));
+        }
+        Ok(item)
+    }
+
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
@@ -887,8 +927,10 @@ impl LanguageServer for Backend {
 
         let text = document.text();
         let encoding = state.encoding;
+        // Indexed once for the whole response rather than rescanned per token.
+        let lines = convert::LineIndex::new(text);
         let data = semantic::tokens(catalog, text, |line, byte| {
-            to_lsp_position(text, skript_index::Position::new(line, byte), encoding).character
+            lines.to_column(line, byte, encoding)
         });
 
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1000,10 +1042,17 @@ fn enclosing_call(prefix: &str) -> Option<(String, u32)> {
             b'(' => {
                 if depth == 0 {
                     // The identifier immediately before the paren names the call.
+                    //
+                    // Walking chars rather than adding 1 to `rfind`'s byte
+                    // offset: a multi-byte delimiter such as `§` or an em dash
+                    // would otherwise leave `start` mid-character and panic on
+                    // the slice.
                     let head = &prefix[..index];
                     let start = head
-                        .rfind(|ch: char| !(ch.is_alphanumeric() || ch == '_'))
-                        .map(|at| at + 1)
+                        .char_indices()
+                        .rev()
+                        .find(|(_, ch)| !(ch.is_alphanumeric() || *ch == '_'))
+                        .map(|(at, ch)| at + ch.len_utf8())
                         .unwrap_or(0);
                     let name = &head[start..];
                     return (!name.is_empty()).then(|| (name.to_string(), commas));
@@ -1139,7 +1188,7 @@ fn lsp_symbol_kind(kind: SymbolKind) -> tower_lsp::lsp_types::SymbolKind {
 #[allow(deprecated)]
 fn to_document_symbol(
     symbol: &skript_index::Symbol,
-    text: &str,
+    lines: &convert::LineIndex<'_>,
     encoding: Encoding,
 ) -> DocumentSymbol {
     DocumentSymbol {
@@ -1148,13 +1197,13 @@ fn to_document_symbol(
         kind: lsp_symbol_kind(symbol.kind),
         tags: None,
         deprecated: None,
-        range: to_lsp_range(text, symbol.range, encoding),
-        selection_range: to_lsp_range(text, symbol.selection_range, encoding),
+        range: lines.to_lsp_range(symbol.range, encoding),
+        selection_range: lines.to_lsp_range(symbol.selection_range, encoding),
         children: Some(
             symbol
                 .children
                 .iter()
-                .map(|child| to_document_symbol(child, text, encoding))
+                .map(|child| to_document_symbol(child, lines, encoding))
                 .collect(),
         ),
     }

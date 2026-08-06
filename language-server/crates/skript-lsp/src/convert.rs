@@ -40,7 +40,63 @@ impl Encoding {
     }
 }
 
+/// A document's lines, indexed once.
+///
+/// `nth_line` walks the whole buffer, and `semantic::encode` converts two
+/// columns per token — so on a 1,000-line file with a few thousand tokens the
+/// naive path rescanned the document about ten thousand times per request.
+/// Building this once turns that into a single pass.
+pub struct LineIndex<'a> {
+    lines: Vec<&'a str>,
+}
+
+impl<'a> LineIndex<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            lines: text
+                .split('\n')
+                .map(|line| line.trim_end_matches('\r'))
+                .collect(),
+        }
+    }
+
+    fn line(&self, line: u32) -> &str {
+        self.lines.get(line as usize).copied().unwrap_or("")
+    }
+
+    /// Converts a byte column on `line` to the client's column encoding.
+    pub fn to_column(&self, line: u32, byte: u32, encoding: Encoding) -> u32 {
+        match encoding {
+            Encoding::Utf8 => byte,
+            Encoding::Utf16 => {
+                let text = self.line(line);
+                let byte = (byte as usize).min(text.len());
+                text[..floor_char_boundary(text, byte)]
+                    .encode_utf16()
+                    .count() as u32
+            }
+        }
+    }
+
+    pub fn to_lsp_position(&self, position: Position, encoding: Encoding) -> lsp::Position {
+        lsp::Position {
+            line: position.line,
+            character: self.to_column(position.line, position.character, encoding),
+        }
+    }
+
+    pub fn to_lsp_range(&self, range: Range, encoding: Encoding) -> lsp::Range {
+        lsp::Range {
+            start: self.to_lsp_position(range.start, encoding),
+            end: self.to_lsp_position(range.end, encoding),
+        }
+    }
+}
+
 /// Converts an internal position (byte column) to an LSP one.
+///
+/// Fine for a one-off; build a [`LineIndex`] when converting many positions
+/// against the same document.
 pub fn to_lsp_position(text: &str, position: Position, encoding: Encoding) -> lsp::Position {
     let character = match encoding {
         Encoding::Utf8 => position.character,

@@ -185,6 +185,15 @@ pub fn fetch_text(source: &DocsSource, cache_dir: &Path) -> Result<String, LoadE
     let url = source.url().expect("non-local sources always have a URL");
     match download(&url) {
         Ok(text) => {
+            // Only cache what parses. A truncated body or a 200-OK error page
+            // written straight to disk would be served as "fresh" for the next
+            // 24 hours, leaving syntax broken for a day with no retry.
+            if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                return Err(LoadError::Http(format!(
+                    "{url} returned {} bytes that are not valid JSON — not caching it",
+                    text.len()
+                )));
+            }
             let _ = fs::create_dir_all(cache_dir);
             let _ = fs::write(&cache_path, &text);
             Ok(text)
@@ -246,11 +255,19 @@ fn download(url: &str) -> Result<String, LoadError> {
         .map_err(|error| LoadError::Http(format!("could not fetch {url}: {error}")))?;
 
     let mut text = String::new();
+    // Read one byte past the cap so an overrun is detectable. Silently
+    // truncating would hand back a body that looks complete but is not.
     response
         .into_reader()
-        .take(MAX_DOWNLOAD_BYTES)
+        .take(MAX_DOWNLOAD_BYTES + 1)
         .read_to_string(&mut text)
         .map_err(LoadError::Io)?;
+
+    if text.len() as u64 > MAX_DOWNLOAD_BYTES {
+        return Err(LoadError::Http(format!(
+            "{url} is larger than the {MAX_DOWNLOAD_BYTES} byte limit"
+        )));
+    }
 
     Ok(text)
 }

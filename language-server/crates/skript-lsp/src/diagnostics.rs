@@ -85,8 +85,18 @@ pub fn check(
 /// here, where it produces a message instead of a broken tree.
 fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
     let mut unit: Option<&str> = None;
+    let prose = block_comment_lines(document.text());
 
     for (number, line) in document.text().lines().enumerate() {
+        // A `###` block's interior is prose, and its leading whitespace means
+        // nothing. Reading it as code let a three-space comment line decide the
+        // file's indent unit, which then flagged every real tab-indented line
+        // as inconsistent. `skript-format` already treats these lines as
+        // verbatim; the two must agree.
+        if prose.contains(&number) {
+            continue;
+        }
+
         let indent_len = line.len() - line.trim_start().len();
         if indent_len == 0 || line.trim().is_empty() {
             continue;
@@ -205,14 +215,29 @@ fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) 
 }
 
 fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut Vec<Diagnostic>) {
+    // Gathered once. Calling `Workspace::definitions` per reference walked every
+    // indexed document and rebuilt its whole symbol tree each time, so a file
+    // with N calls cost N full-workspace scans on every keystroke.
+    let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for other in workspace.documents() {
+        let same_file = other.uri() == document.uri();
+        for symbol in other.symbols().flat() {
+            if !symbol.kind.is_function() {
+                continue;
+            }
+            // A `local function` is invisible outside the file declaring it.
+            if symbol.kind == SymbolKind::LocalFunction && !same_file {
+                continue;
+            }
+            declared.insert(symbol.name.as_str());
+        }
+    }
+
     for reference in &document.symbols().references {
         if reference.kind != SymbolKind::Function {
             continue;
         }
-        if workspace
-            .definitions(SymbolKind::Function, &reference.name, document.uri())
-            .is_empty()
-        {
+        if !declared.contains(reference.name.as_str()) {
             out.push(Diagnostic {
                 range: reference.range,
                 severity: Severity::Error,
@@ -227,6 +252,22 @@ fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut
 }
 
 /// Catalog-backed checks: deprecation, and optionally unrecognised syntax.
+/// Line numbers inside `###` block comments, delimiters excluded.
+fn block_comment_lines(text: &str) -> std::collections::HashSet<usize> {
+    let mut inside = false;
+    let mut lines = std::collections::HashSet::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.trim() == "###" {
+            inside = !inside;
+            continue;
+        }
+        if inside {
+            lines.insert(number);
+        }
+    }
+    lines
+}
+
 fn check_catalog(
     document: &Document,
     catalog: &Catalog,
@@ -234,9 +275,13 @@ fn check_catalog(
     options: Options,
     out: &mut Vec<Diagnostic>,
 ) {
+    let prose = block_comment_lines(document.text());
+
     for (number, raw) in document.text().lines().enumerate() {
         let trimmed = raw.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        // Prose inside a `###` block is not syntax and must never be reported
+        // as unrecognised.
+        if trimmed.is_empty() || trimmed.starts_with('#') || prose.contains(&number) {
             continue;
         }
         let code = trimmed.trim_end_matches(':');
@@ -420,5 +465,39 @@ mod tests {
         for pair in found.windows(2) {
             assert!(pair[0].range.start <= pair[1].range.start);
         }
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    fn codes_for(source: &str) -> Vec<&'static str> {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+        let document = workspace.get("file:///t.sk").unwrap();
+        check(document, &workspace, None, None, Options::default())
+            .into_iter()
+            .map(|d| d.code)
+            .collect()
+    }
+
+    #[test]
+    fn block_comment_prose_does_not_set_the_indent_unit() {
+        // Regression: the three-space prose line made the file "space
+        // indented", so the tab-indented prose line and every real tab-indented
+        // line after it were flagged. This is skript-format's own test fixture.
+        let found =
+            codes_for("###\n   deliberately indented prose\n\tand a tab\n###\non join:\n\tstop\n");
+        assert!(
+            found.is_empty(),
+            "prose inside a block comment was read as code: {found:?}"
+        );
+    }
+
+    #[test]
+    fn real_indentation_errors_are_still_caught_around_a_block_comment() {
+        let found = codes_for("###\n   prose\n###\non join:\n \tmixed\n");
+        assert!(found.contains(&"mixed-indentation"), "got {found:?}");
     }
 }

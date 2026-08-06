@@ -236,7 +236,15 @@ impl<'a> Parser<'a> {
             };
         }
 
+        // A parse mark's colon may only appear at the very start of a group or
+        // immediately after a `|`. Testing "the pending literal is blank"
+        // instead also matched the position just after `%…%`, `)` or `]` —
+        // every one of which flushes the literal — so `%number%:%number%` lost
+        // its colon and silently matched the wrong lines.
+        let mut at_alternative_start = true;
+
         while let Some(&(offset, ch)) = self.chars.peek() {
+            let consumed_something = !matches!(ch, ' ' | '\t');
             match ch {
                 _ if Some(ch) == terminator => {
                     self.chars.next();
@@ -286,7 +294,7 @@ impl<'a> Parser<'a> {
                     flush_literal!();
                     current.push(Node::Regex(self.take_until('>', offset)?));
                 }
-                ':' if literal_ends_a_parse_mark(&literal) => {
+                ':' if at_alternative_start => {
                     // `[:local]` — the colon marks the rest as a tagged
                     // alternative. The tag name is ordinary literal text.
                     self.chars.next();
@@ -303,6 +311,14 @@ impl<'a> Parser<'a> {
                     self.chars.next();
                     literal.push(ch);
                 }
+            }
+
+            // Only whitespace and the opening of a group keep us at the start
+            // of an alternative.
+            if consumed_something && !matches!(ch, '|') {
+                at_alternative_start = false;
+            } else if ch == '|' {
+                at_alternative_start = true;
             }
         }
 
@@ -369,12 +385,6 @@ impl<'a> Parser<'a> {
             offset: opened_at,
         })
     }
-}
-
-/// A `:` only introduces a parse mark at the start of a group or after `|`,
-/// i.e. when nothing but whitespace precedes it in the current literal run.
-fn literal_ends_a_parse_mark(literal: &str) -> bool {
-    literal.trim().is_empty()
 }
 
 fn finish(mut branches: Vec<Vec<Node>>) -> Vec<Node> {
@@ -542,5 +552,71 @@ mod tests {
         let vague = Pattern::parse("%objects%").unwrap();
         let concrete = Pattern::parse("give %item types% to %players%").unwrap();
         assert!(concrete.specificity() > vague.specificity());
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+
+    #[test]
+    fn a_colon_after_a_slot_is_literal_text() {
+        // Regression: the colon was read as a parse mark whenever the pending
+        // literal was blank — which includes the position right after `%…%`,
+        // `)` or `]`, because those all flush the literal. The colon vanished,
+        // so the pattern matched lines it should not.
+        let pattern = Pattern::parse("%number%:%number%").unwrap();
+        let literals: Vec<&str> = pattern
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Literal(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            literals,
+            vec![":"],
+            "the colon was swallowed: {:?}",
+            pattern.nodes
+        );
+    }
+
+    #[test]
+    fn a_colon_after_a_choice_is_literal_text() {
+        let pattern = Pattern::parse("(a|b):c").unwrap();
+        let literals: Vec<&str> = pattern
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                Node::Literal(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(literals, vec![":c"], "got {:?}", pattern.nodes);
+    }
+
+    #[test]
+    fn a_real_parse_mark_is_still_stripped() {
+        let pattern = Pattern::parse("[:local] function").unwrap();
+        assert_eq!(
+            pattern.nodes,
+            vec![
+                Node::Optional(vec![Node::Literal("local".into())]),
+                Node::Literal("function".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_parse_mark_after_an_alternative_is_still_stripped() {
+        let pattern = Pattern::parse("(:first|:second)").unwrap();
+        assert_eq!(
+            pattern.nodes,
+            vec![Node::Choice(vec![
+                vec![Node::Literal("first".into())],
+                vec![Node::Literal("second".into())]
+            ])]
+        );
     }
 }

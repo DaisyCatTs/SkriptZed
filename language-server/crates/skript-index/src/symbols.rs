@@ -58,7 +58,15 @@ pub struct Symbol {
 pub struct Reference {
     pub kind: SymbolKind,
     pub name: String,
+    /// The whole reference, including a variable's braces. Used for hit-testing
+    /// so that clicking anywhere on `{score::*}` finds it.
     pub range: Range,
+    /// Just the name, excluding `{`, the `_`/`-` scope sigil and `}`.
+    ///
+    /// Renames edit this and nothing else. Rebuilding the surrounding syntax
+    /// from a prefix instead used to drop the `::*` off a list variable,
+    /// silently turning it into a scalar.
+    pub name_range: Range,
 }
 
 /// Everything extracted from one document.
@@ -225,6 +233,19 @@ fn field_text(node: Node<'_>, field: &str, source: &str) -> Option<String> {
     }
 }
 
+/// The span covering every child carrying `field`.
+///
+/// `_content` is inlined by the grammar, so a header arrives as a run of
+/// siblings rather than one node; taking only the first would clip the range to
+/// its opening word.
+fn field_range(node: Node<'_>, field: &str) -> Option<Range> {
+    let mut cursor = node.walk();
+    let mut children = node.children_by_field_name(field, &mut cursor);
+    let first: Range = children.next()?.into();
+    let last = children.last().map(Range::from).unwrap_or(first);
+    Some(Range::new(first.start, last.end))
+}
+
 fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim().to_string()
 }
@@ -279,7 +300,13 @@ fn body_sections(node: Node<'_>, source: &str) -> Vec<Symbol> {
                     name: first_line(&header),
                     detail: String::new(),
                     range: child.into(),
-                    selection_range: child.into(),
+                    // Only the header, never the body. A selection range that
+                    // spanned the whole section made `declaration_at` match
+                    // every nested line, and because the server checks
+                    // declarations before the catalog, hovering anything inside
+                    // an `if` showed the `if` instead of the line under the
+                    // cursor.
+                    selection_range: field_range(child, "header").unwrap_or_else(|| child.into()),
                     children: body_sections(child, source),
                 });
             }
@@ -339,6 +366,13 @@ fn assignment_entries(node: Node<'_>, source: &str) -> Vec<Symbol> {
         } else {
             (SymbolKind::Alias, raw.trim().to_string())
         };
+        // Select the name inside the braces, so a rename rewrites `score` and
+        // leaves `{`, the scope sigil and `}` alone. Selecting the whole node
+        // turned `{score} = 0` into `total = 0`.
+        let selection = target
+            .child_by_field_name("name")
+            .map(Range::from)
+            .unwrap_or_else(|| target.into());
         symbols.push(Symbol {
             kind,
             name,
@@ -347,7 +381,7 @@ fn assignment_entries(node: Node<'_>, source: &str) -> Vec<Symbol> {
                 .map(|value| text_of(value, source).trim().to_string())
                 .unwrap_or_default(),
             range: child.into(),
-            selection_range: target.into(),
+            selection_range: selection,
             children: Vec::new(),
         });
     }
@@ -356,6 +390,15 @@ fn assignment_entries(node: Node<'_>, source: &str) -> Vec<Symbol> {
 
 /// `{_x}` is trigger-local; `{x}` and `{-x}` are global (the `-` only affects
 /// whether the value is persisted, not its visibility).
+/// Whether a variable name contains a `%…%` slot, which makes it dynamic.
+fn has_interpolation(name: Node<'_>) -> bool {
+    let mut cursor = name.walk();
+    let found = name
+        .children(&mut cursor)
+        .any(|child| child.kind() == "interpolation");
+    found
+}
+
 fn variable_kind(raw: &str) -> SymbolKind {
     if raw.starts_with("{_") {
         SymbolKind::LocalVariable
@@ -395,6 +438,7 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                         kind: SymbolKind::Function,
                         name: text_of(name, source),
                         range: name.into(),
+                        name_range: name.into(),
                     });
                 }
             }
@@ -404,6 +448,7 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                         kind: SymbolKind::Option,
                         name: text_of(name, source).trim().to_string(),
                         range: name.into(),
+                        name_range: name.into(),
                     });
                 }
             }
@@ -413,14 +458,20 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                 // name like `{home::%uuid of player%}` names a different
                 // variable per player, so renaming it as one symbol would be
                 // wrong.
-                if current
+                //
+                // The test is for an `interpolation` child specifically, not
+                // for a single child: `{score::*}` has three (text, `::`,
+                // text) and is perfectly static, and list variables are far too
+                // common in Skript to leave unindexed.
+                if let Some(name_node) = current
                     .child_by_field_name("name")
-                    .is_some_and(|name| name.child_count() == 1)
+                    .filter(|name| !has_interpolation(*name))
                 {
                     out.references.push(Reference {
                         kind: variable_kind(&raw),
                         name: normalise_variable(&raw),
                         range: current.into(),
+                        name_range: name_node.into(),
                     });
                 }
             }
@@ -528,5 +579,38 @@ mod tests {
         let event = &found.symbols[0];
         assert_eq!(event.children.len(), 1);
         assert!(event.children[0].name.starts_with("if"));
+    }
+}
+
+#[cfg(test)]
+mod review_regressions {
+    use super::*;
+    use crate::{Document, Position};
+
+    #[test]
+    fn a_sections_selection_range_covers_only_its_header() {
+        // Regression: the selection range used to span the whole section body,
+        // so `declaration_at` matched every nested line. The LSP checks
+        // declarations before the catalog, which made hover inside any section
+        // show the enclosing `if` instead of the effect on the line.
+        let document = Document::new(
+            "file:///t.sk",
+            "on join:\n\tif {_x} is set:\n\t\tsend \"a\"\n",
+        );
+        let symbols = document.symbols();
+
+        // The cursor is on `send "a"`, two levels in.
+        let inside_body = Position::new(2, 4);
+        assert!(
+            symbols.declaration_at(inside_body).is_none(),
+            "a position inside a section body must not resolve to the section header"
+        );
+
+        // The header itself still resolves.
+        let on_header = Position::new(1, 2);
+        let found = symbols
+            .declaration_at(on_header)
+            .expect("header should resolve");
+        assert_eq!(found.kind, SymbolKind::Section);
     }
 }

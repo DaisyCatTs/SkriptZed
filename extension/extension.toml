@@ -16,8 +16,9 @@ snippets = ["./snippets/skript.json"]
 # Before publishing, replace `repository` with the public HTTPS URL of the
 # split-out tree-sitter-skript repository.
 [grammars.skript]
-repository = "file:///C:/Users/Daisy/Desktop/ZedSkript/tree-sitter-skript"
-rev = "32284844fa193e85e907b3ed87e2e7ed092df8d6"
+repository = "file:///C:/Users/Daisy/Desktop/ZedSkript"
+rev = "8fcedff796a4a9a8f29c3a45cd422ce94ce9621b"
+path = "tree-sitter-skript"
 
 [language_servers.skript-lsp]
 name = "Skript Language Server"

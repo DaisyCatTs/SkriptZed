@@ -17,7 +17,7 @@
 // macOS and Linux — Node is already required for the tree-sitter CLI.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
@@ -109,13 +109,31 @@ if (hasChanges) {
 }
 
 const rev = run('git', ['rev-parse', 'HEAD'], { cwd: root, quiet: true }).trim();
+
+// The *repository root*, not the grammar directory. The grammar lives inside
+// this monorepo and is not a git repository of its own, so pointing Zed at
+// `…/tree-sitter-skript` fails with "does not appear to be a git repository".
+// `path = "tree-sitter-skript"` in extension.toml selects the subdirectory.
+//
 // pathToFileURL gets the Windows drive-letter form right (file:///C:/...).
-const url = pathToFileURL(grammarDir).href;
+const url = pathToFileURL(root).href;
+
+// A stale checkout of a *different* URL makes Zed refuse with "grammar
+// directory already exists, but is not a git clone of ...".
+const staleGrammar = join(root, 'extension', 'grammars');
+if (existsSync(staleGrammar)) {
+  rmSync(staleGrammar, { recursive: true, force: true });
+  console.log('==> cleared the previous grammar checkout');
+}
 
 console.log(`==> pointing extension.toml at ${rev.slice(0, 12)}`);
 let text = readFileSync(manifest, 'utf8');
 text = text.replace(/^repository = "file:\/\/.*"$/m, `repository = "${url}"`);
 text = text.replace(/^rev = ".*"$/m, `rev = "${rev}"`);
+if (!/^path = /m.test(text)) {
+  text = text.replace(/^rev = ".*"$/m, match => `${match}
+path = "tree-sitter-skript"`);
+}
 writeFileSync(manifest, text);
 
 console.log(`

@@ -76,6 +76,16 @@ below is new.
   minimal theme may not define. Checked against Catppuccin, One Dark, Material
   Theme Darker and OLED themes.
 
+### Fixed before release
+
+- Alternatives inside a group that carry a space — `(is|are)(n't| not)`,
+  `ha(s|ve)[(n't| not)]`, `off[ |-]hand` — matched only their contracted
+  spelling, so everyday conditions like `{_x} is not set` and `{_p} is IP
+  banned` resolved to the wrong syntax or to nothing.
+- A structure's entries (`description:`, `prefix:`, alias and variable
+  declarations) were reported as unknown syntax when that diagnostic was
+  enabled, which made the setting unusable on any script with a command block.
+
 ### Known limitations
 
 - Ordinary statement prose is not coloured by the grammar, only by the language

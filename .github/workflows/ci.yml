@@ -107,6 +107,18 @@ jobs:
       - run: cargo build --release --target wasm32-wasip2
         working-directory: extension
 
+      # Zed auto-discovers every languages/* directory and then fails to load
+      # the extension if one has no config.toml. An empty directory left behind
+      # by scaffolding is invisible to git, so it only shows up at install time.
+      - name: Check every language directory has a config
+        run: |
+          for dir in extension/languages/*/; do
+            if [ ! -f "$dir/config.toml" ]; then
+              echo "::error::$dir has no config.toml — Zed will refuse to load the extension"
+              exit 1
+            fi
+          done
+
       - name: Check the query files Zed will not load
         run: |
           # Zed reads exactly ten query files. folds.scm and locals.scm are

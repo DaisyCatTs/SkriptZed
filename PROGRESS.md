@@ -31,6 +31,105 @@ helper scripts rewritten in Node so Windows needs no shell.
 | 7 | Docs, examples, CI | ✅ done |
 | 8 | **Addon ecosystem + version awareness** | ✅ done — 168 tests + 40 end-to-end checks |
 | 9 | **Classification accuracy pass** | ✅ done — 193 tests; see below |
+| 10 | **Highlighting + IntelliSense pass** | ✅ done — 198 tests, 35 grammar tests; see below |
+
+---
+
+## Highlighting + IntelliSense pass (2026-08-06)
+
+### The finding that reframed everything
+
+Daisy had **never once run the language server**. The Zed log showed
+`Could not find or download skript-lsp … finding a prerelease`, and all three
+resolution paths missed at once: the repo had zero releases, there was no
+`skript-lsp` entry anywhere in Zed's settings, and the binary was not on PATH.
+Every judgement about this extension up to that point — "the intellisense is
+ass", "some of the highlighting is very ass" — was made against **tree-sitter
+alone with the entire semantic layer absent**.
+
+`.zed/settings.json` (gitignored, per-machine) now points at the local release
+build. That is the fix for testing; the release below is the fix for everyone
+else.
+
+### Highlighting: 85% → 90% grammar, 92% → 97% combined
+
+Measured on `showcase.sk` with `scripts/coverage.mjs`.
+
+Two of these were outright bugs, both from the same misreading of **repeated
+fields**:
+
+* Only the **first word of a multi-word event name** was coloured. `on first
+  join` gives the event two `name:` children; the pattern matched once and left
+  `join` plain — every multi-word event in the language. Fixed with a `+`
+  quantifier.
+* `do while …` coloured **neither** word: the predicate was tested against the
+  first `header:` child, failed on `do`, and the match was dropped before
+  `while`. Adding `do` to the list fixes the first word. `while` inside
+  `do while` is still plain — one match per pattern per node — and that is an
+  accepted limitation, not an oversight.
+
+Grammar change: **colour codes outside strings**. `&6[Server]&r` in an
+`options:` value or a `description:` entry was *mis-tokenised*, not merely
+uncoloured — it lexed as `operator(&) number(6) punctuation([) …`. `legacy_color`
+needed no change, only a new use site. Format tags needed a **separate stricter
+token**: `format_tag`'s body is safe inside a string where `<` cannot be an
+operator, but in bare content it would swallow `< 5 and {_b} >` out of
+`if {_a} < 5 and {_b} > 3:`. `_bare_format_tag` sits at prec(1) — above
+`operator` at 0, below `command_argument`'s `<` at 3.
+
+Query-only additions: command entry values as text (nested under `command` so an
+`options:` value, which may genuinely be code, is excluded — verified against
+showcase.sk:13); the three variable scopes distinguished by positive `#match?`
+tests that degrade to plain `@variable`; `default_value` and the structural
+`:` `=` `,`; `legacy_color` off `@string.escape`, which had made `&6` and a
+literal `""` indistinguishable.
+
+### Indentation: two real defects
+
+`increase_indent_pattern` began `^[^#]*`, forbidding `#` anywhere on the line —
+but `#` is literal inside a string and a variable name, so `send "Item #1":` and
+`set {count##} to 1:` never opened a block, though `scanner.c` correctly emitted
+SECTION_COLON for both. The `$` anchor also failed on CRLF.
+
+Replaced with a pattern that spells out the code portion the way
+`Node.splitLine` does. **Validated old-vs-new over all 19,391 lines of the
+upstream corpus: zero regressions, four genuine fixes in Skript's own
+EvtFish.sk.**
+
+### IntelliSense
+
+* **Completion was offering unresolvable names.** It drew from
+  `workspace_symbols`, which exists to back the project-wide picker; so another
+  file's `{_local}` variables and options appeared in every trigger. Now uses
+  `symbols_in_scope`, applying the same `is_file_local` rule as `definitions`.
+* **Inlay hints** — parameter names at call sites. Two things the tests caught
+  that reasoning had not: the matching close paren must be found by depth, or
+  `= (1, 7)` truncates every later parameter; and a comma inside a string or a
+  nested call must not split an argument.
+* **Document highlight** — resolved through the same `symbol_under_cursor` path
+  as go-to-definition, so the editor cannot highlight one symbol while F12
+  navigates to another.
+
+**Deliberately not done — command references.** In Skript a command is invoked
+from inside a string (`execute player command "/home"`), so indexing those would
+let a rename rewrite arbitrary text. Absent beats unsafe.
+
+**Deliberately not done — self-injecting `skript` into `interpolation_text`.**
+An expression fragment like `uuid of player` parsed as a whole document yields
+an ERROR-rooted subtree with a MISSING section colon: strictly worse than the
+current flat `@embedded`. A `#match?` on the existing node gives `%arg-1%` and
+`%loop-value%` their builtin colour for free instead.
+
+### GitHub Actions is not running — needs Daisy
+
+`v0.1.0` is tagged and pushed, and the workflow now triggers on `v*` tags (it
+only listened to `main`/`master` before, which is why a tag-gated release job
+was unreachable). But **no run is created for any event** — tag, branch or PR —
+and the one run that ever existed died with *"The job was not acquired by Runner
+of type hosted even after multiple attempts"*. Actions is enabled and the
+workflow is active, so this is an account-level runner/billing problem that has
+to be resolved in GitHub's settings. Until then there are no release binaries
+and the extension cannot self-install its server.
 
 ---
 

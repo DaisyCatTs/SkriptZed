@@ -25,3 +25,8 @@ vendor/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local Zed settings. These point `lsp.skript-lsp.binary.path` at an absolute
+# path on one machine, so they are per-developer rather than per-project.
+# `docs/installation.md` documents what to put here.
+.zed/

@@ -18,7 +18,7 @@ snippets = ["./snippets/skript.json"]
 # version checked in here is the one every user installs from.
 [grammars.skript]
 repository = "https://github.com/DaisyCatTs/SkriptZed"
-rev = "c3a19d7be96d492086005deb9d6085e967e7c93d"
+rev = "18ad70e59df2eb69645d5891ce0caef058399754"
 path = "tree-sitter-skript"
 
 [language_servers.skript-lsp]

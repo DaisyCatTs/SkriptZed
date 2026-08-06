@@ -278,9 +278,7 @@ impl State<'_> {
         // there is, because most patterns end in a slot.
         let available = self.tokens.len().saturating_sub(pos);
         let reserved = min_tokens(rest, cont);
-        let Some(most) = available.checked_sub(reserved).filter(|take| *take > 0) else {
-            return None;
-        };
+        let most = available.checked_sub(reserved).filter(|take| *take > 0)?;
 
         for take in 1..=most {
             self.steps += 1;

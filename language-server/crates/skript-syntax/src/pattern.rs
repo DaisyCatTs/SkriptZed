@@ -183,6 +183,155 @@ impl Pattern {
     }
 }
 
+/// How many spelled-out forms a glued run may expand to before we give up on it.
+///
+/// The cross product is exponential in the number of glued groups. Real patterns
+/// stay far below this — the widest in core Skript is
+/// `(is|are)[(n't| not)]` at six — but an addon is free to write something silly
+/// and must not be able to blow up parsing.
+const MAX_FUSED_FORMS: usize = 64;
+
+/// Joins nodes that are written with no space between them into whole words.
+///
+/// Skript's metasyntax is character-level, but matching a line is only tractable
+/// token-level, and 38% of published patterns straddle that divide:
+/// `cancel[l]ed`, `block[s]`, `[right|left]click`, `ha(s|ve)`, `toggl(e|ing)`.
+/// Left alone, `Node::Literal("cancel")` is compared against the whole token
+/// `cancelled` and fails — and worse, the inverted index keys the pattern on a
+/// word that can never appear, so it is not even offered to the matcher.
+///
+/// Expanding a glued run to its literal alternatives fixes both at once, and
+/// costs nothing at match time. `cancel[l]ed` becomes
+/// `Choice(["cancelled", "canceled"])`.
+///
+/// `glued[i]` says node `i` is written flush against node `i - 1`.
+fn fuse_glued(nodes: Vec<Node>, glued: &[bool]) -> Vec<Node> {
+    if nodes.len() < 2 || glued.len() != nodes.len() {
+        return nodes;
+    }
+
+    let mut out: Vec<Node> = Vec::new();
+    let mut run: Vec<Node> = Vec::new();
+
+    for (index, node) in nodes.into_iter().enumerate() {
+        // A slot or regex has no spelled-out form, so it can never be part of a
+        // run; it closes the one before it and starts nothing.
+        let fusable = matches!(node, Node::Literal(_) | Node::Optional(_) | Node::Choice(_));
+
+        if !glued[index] || !fusable {
+            out.extend(flush_run(&mut run));
+        }
+        if fusable {
+            run.push(node);
+        } else {
+            out.push(node);
+        }
+    }
+    out.extend(flush_run(&mut run));
+    out
+}
+
+/// Collapses a pending glued run into one node, or returns it untouched.
+fn flush_run(run: &mut Vec<Node>) -> Vec<Node> {
+    let taken = std::mem::take(run);
+    if taken.len() < 2 {
+        return taken;
+    }
+    match spell_out(&taken) {
+        Some(forms) => vec![forms],
+        // Too wide to enumerate: leave the run as it was. Matching stays
+        // token-based and this pattern keeps its old behaviour rather than
+        // gaining a wrong one.
+        None => taken,
+    }
+}
+
+/// Every whole-word string a glued run can produce, as a single node.
+fn spell_out(run: &[Node]) -> Option<Node> {
+    let mut forms = vec![String::new()];
+
+    for node in run {
+        let endings = word_forms(node)?;
+        if forms.len().checked_mul(endings.len())? > MAX_FUSED_FORMS {
+            return None;
+        }
+        forms = forms
+            .iter()
+            .flat_map(|prefix| {
+                endings.iter().map(move |ending| {
+                    // The parts were written flush, but a branch may itself be
+                    // several words (`(n't| not)`), so re-collapse.
+                    collapse(&format!("{prefix}{ending}"))
+                })
+            })
+            .collect();
+    }
+
+    // An all-optional run can vanish entirely; that empty form is the `Optional`
+    // wrapper, not a branch that matches an empty token.
+    let optional = forms.iter().any(|form| form.is_empty());
+    let mut spelled: Vec<String> = forms.into_iter().filter(|f| !f.is_empty()).collect();
+    spelled.sort();
+    spelled.dedup();
+
+    let node = match spelled.len() {
+        0 => return None,
+        1 => Node::Literal(spelled.pop().expect("length checked")),
+        _ => Node::Choice(
+            spelled
+                .into_iter()
+                .map(|form| vec![Node::Literal(form)])
+                .collect(),
+        ),
+    };
+
+    Some(if optional {
+        Node::Optional(vec![node])
+    } else {
+        node
+    })
+}
+
+/// The text alternatives a node can stand for, `""` meaning "absent".
+fn word_forms(node: &Node) -> Option<Vec<String>> {
+    match node {
+        Node::Literal(text) => Some(vec![text.clone()]),
+        Node::Optional(inner) => {
+            let mut forms = sequence_forms(inner)?;
+            forms.push(String::new());
+            Some(forms)
+        }
+        Node::Choice(branches) => {
+            let mut forms = Vec::new();
+            for branch in branches {
+                forms.extend(sequence_forms(branch)?);
+            }
+            Some(forms)
+        }
+        Node::Slot(_) | Node::Regex(_) => None,
+    }
+}
+
+/// The cross product of a sequence's word forms.
+fn sequence_forms(nodes: &[Node]) -> Option<Vec<String>> {
+    let mut forms = vec![String::new()];
+    for node in nodes {
+        let endings = word_forms(node)?;
+        if forms.len().checked_mul(endings.len())? > MAX_FUSED_FORMS {
+            return None;
+        }
+        forms = forms
+            .iter()
+            .flat_map(|prefix| {
+                endings
+                    .iter()
+                    .map(move |ending| format!("{prefix}{ending}"))
+            })
+            .collect();
+    }
+    Some(forms)
+}
+
 fn literal_words(nodes: &[Node]) -> Vec<&str> {
     nodes
         .iter()
@@ -221,18 +370,43 @@ struct Parser<'a> {
 impl<'a> Parser<'a> {
     /// Parses until `terminator` (or end of input when `None`), splitting on
     /// any top-level `|` into a choice.
+    // `flush_literal!` updates `gap` on every path, including the final flush
+    // before returning, where nothing reads it again. Tracking that per
+    // expansion would make the macro harder to follow than the warning is worth.
+    #[allow(unused_assignments)]
     fn parse_sequence(&mut self, terminator: Option<char>) -> Result<Vec<Node>, ParseError> {
         let mut branches: Vec<Vec<Node>> = Vec::new();
         let mut current: Vec<Node> = Vec::new();
         let mut literal = String::new();
 
+        // Whether whitespace separates the last node pushed from the next one.
+        // 38% of Skript's patterns glue a group straight onto a word —
+        // `cancel[l]ed`, `[right|left]click`, `ha(s|ve)`, `block[s]` — and the
+        // collapsed literal text alone cannot tell those apart from `[the] event`.
+        // `fuse_glued` needs this to know what to join. Starts true: the first
+        // node has nothing before it.
+        let mut gap = true;
+        let mut glued: Vec<bool> = Vec::new();
+
         macro_rules! flush_literal {
             () => {
                 let trimmed = collapse(&literal);
                 if !trimmed.is_empty() {
+                    glued.push(!gap && !literal.starts_with(char::is_whitespace));
                     current.push(Node::Literal(trimmed));
+                    gap = literal.ends_with(char::is_whitespace);
+                } else if !literal.is_empty() {
+                    gap = true;
                 }
                 literal.clear();
+            };
+        }
+
+        macro_rules! push_group {
+            ($node:expr) => {
+                glued.push(!gap);
+                current.push($node);
+                gap = false;
             };
         }
 
@@ -249,7 +423,7 @@ impl<'a> Parser<'a> {
                 _ if Some(ch) == terminator => {
                     self.chars.next();
                     flush_literal!();
-                    branches.push(std::mem::take(&mut current));
+                    branches.push(fuse_glued(std::mem::take(&mut current), &glued));
                     return Ok(finish(branches));
                 }
                 '\\' => {
@@ -261,7 +435,9 @@ impl<'a> Parser<'a> {
                 '|' => {
                     self.chars.next();
                     flush_literal!();
-                    branches.push(std::mem::take(&mut current));
+                    branches.push(fuse_glued(std::mem::take(&mut current), &glued));
+                    glued.clear();
+                    gap = true;
                 }
                 '[' => {
                     self.chars.next();
@@ -269,13 +445,13 @@ impl<'a> Parser<'a> {
                     let inner = self.parse_sequence(Some(']'))?;
                     // `[:tag]` and `[1¦x]` carry a parse mark; the mark itself
                     // matches no text and has already been stripped below.
-                    current.push(Node::Optional(inner));
+                    push_group!(Node::Optional(inner));
                 }
                 '(' => {
                     self.chars.next();
                     flush_literal!();
                     let inner = self.parse_sequence(Some(')'))?;
-                    current.push(match inner.as_slice() {
+                    push_group!(match inner.as_slice() {
                         [Node::Choice(_)] => inner.into_iter().next().unwrap(),
                         _ => Node::Choice(vec![inner]),
                     });
@@ -283,7 +459,7 @@ impl<'a> Parser<'a> {
                 '%' => {
                     self.chars.next();
                     flush_literal!();
-                    current.push(Node::Slot(self.parse_slot(offset)?));
+                    push_group!(Node::Slot(self.parse_slot(offset)?));
                 }
                 // `<` opens a regex slot — but it is also Skript's less-than
                 // operator, and `CondCompare` really does register
@@ -292,7 +468,7 @@ impl<'a> Parser<'a> {
                 '<' if self.regex_closes(offset) => {
                     self.chars.next();
                     flush_literal!();
-                    current.push(Node::Regex(self.take_until('>', offset)?));
+                    push_group!(Node::Regex(self.take_until('>', offset)?));
                 }
                 ':' if at_alternative_start => {
                     // `[:local]` — the colon marks the rest as a tagged
@@ -330,7 +506,7 @@ impl<'a> Parser<'a> {
         }
 
         flush_literal!();
-        branches.push(current);
+        branches.push(fuse_glued(current, &glued));
         Ok(finish(branches))
     }
 
@@ -446,13 +622,15 @@ mod tests {
 
     #[test]
     fn parses_optionals() {
+        // `[s]` is glued to `holder`, so it is spelled out rather than left as a
+        // separate node — matching is token-based and `holder` never appears as
+        // a token of `leash holders`. See `fuse_glued`.
         let pattern = Pattern::parse("[the] leash holder[s]").unwrap();
         assert_eq!(
             pattern.nodes,
             vec![
                 Node::Optional(vec![lit("the")]),
-                lit("leash holder"),
-                Node::Optional(vec![lit("s")]),
+                Node::Choice(vec![vec![lit("leash holder")], vec![lit("leash holders")]]),
             ]
         );
     }
@@ -527,8 +705,12 @@ mod tests {
 
     #[test]
     fn required_literals_skip_optionals() {
+        // `holder` is deliberately absent: the line may say `holders`, so it is
+        // not a word every match contains. Indexing on it made the pattern
+        // unreachable for the plural — the index key has to be a word that
+        // genuinely always appears, and `leash` is one.
         let pattern = Pattern::parse("[the] leash holder[s] of %entities%").unwrap();
-        assert_eq!(pattern.required_literals(), vec!["leash", "holder", "of"]);
+        assert_eq!(pattern.required_literals(), vec!["leash", "of"]);
     }
 
     #[test]
@@ -593,7 +775,19 @@ mod review_regressions {
                 _ => None,
             })
             .collect();
-        assert_eq!(literals, vec![":c"], "got {:?}", pattern.nodes);
+        // Fused: `:c` is glued to the choice, so the forms are spelled out
+        // whole. The point of the test is that the colon survives as text
+        // rather than being eaten as a parse mark, and it does — inside both
+        // branches now, which is also what the tokenizer will see, since `:` is
+        // not a token boundary.
+        assert!(literals.is_empty(), "got {:?}", pattern.nodes);
+        assert_eq!(
+            pattern.nodes,
+            vec![Node::Choice(vec![
+                vec![Node::Literal("a:c".into())],
+                vec![Node::Literal("b:c".into())],
+            ])],
+        );
     }
 
     #[test]

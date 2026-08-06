@@ -1,0 +1,27 @@
+# Rust
+target/
+**/target/
+
+# Node
+node_modules/
+
+# Zed extension build artifacts — Zed clones grammars here itself
+extension/grammars/
+extension/*.wasm
+
+# tree-sitter build output (src/parser.c IS committed, see docs/grammar.md)
+*.wasm
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+tree-sitter-skript/build/
+
+# Vendored upstream corpus (fetched by scripts/fetch-corpus.sh)
+vendor/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+desktop.ini

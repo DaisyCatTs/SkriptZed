@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skript-syntax",
+    "crates/skript-docs",
+    "crates/skript-index",
+    "crates/skript-format",
+    "crates/skript-addons",
+    "crates/skript-lsp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/DaisyCatTs/SkriptZed"
+rust-version = "1.80"
+
+[workspace.dependencies]
+skript-syntax = { path = "crates/skript-syntax" }
+skript-docs = { path = "crates/skript-docs" }
+skript-index = { path = "crates/skript-index" }
+skript-format = { path = "crates/skript-format" }
+skript-addons = { path = "crates/skript-addons" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

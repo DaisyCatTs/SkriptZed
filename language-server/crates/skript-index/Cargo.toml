@@ -1,0 +1,13 @@
+[package]
+name = "skript-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parses Skript documents and indexes their symbols and references"
+
+[dependencies]
+tree-sitter = "0.26"
+tree-sitter-skript = { path = "../../../tree-sitter-skript" }
+
+[dev-dependencies]

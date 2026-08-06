@@ -1,0 +1,12 @@
+[package]
+name = "skript-syntax"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser and matcher for Skript's syntax-pattern language"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = { workspace = true }

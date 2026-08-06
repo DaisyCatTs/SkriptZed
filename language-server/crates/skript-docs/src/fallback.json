@@ -1,0 +1,164 @@
+{
+  "_comment": [
+    "Minimal built-in catalog for when the real docs.json cannot be fetched.",
+    "",
+    "Hand-written for this project rather than extracted from SkriptLang's",
+    "GPL-3.0 database: it covers only the structural keywords and control flow",
+    "that Skript itself cannot redefine, with descriptions written here. It is",
+    "a fallback so a first run with no network is still usable, not a",
+    "substitute for the real database."
+  ],
+  "source": { "name": "built-in fallback", "version": "" },
+
+  "structures": [
+    {
+      "id": "fallback.command",
+      "name": "Command",
+      "since": "1.0",
+      "description": ["Registers a server command. The leading slash is optional. Its body holds entries such as `permission:` and `description:`, plus the `trigger:` section that runs when the command is used."],
+      "patterns": ["command <.+>"],
+      "examples": ["command /heal:\n\tpermission: skript.heal\n\ttrigger:\n\t\theal player"]
+    },
+    {
+      "id": "fallback.function",
+      "name": "Function",
+      "since": "2.2",
+      "description": ["Declares a reusable function. Parameters become local variables inside the body. A return type may be given with `::`, `->` or `returns`. `local` restricts the function to the script that declares it."],
+      "patterns": ["[local] function <.+>"],
+      "examples": ["function greet(name: text) :: text:\n\treturn \"hello %{_name}%\""]
+    },
+    {
+      "id": "fallback.event",
+      "name": "Event",
+      "since": "1.0",
+      "description": ["Runs its body whenever the named event happens. The leading `on` is optional, and the event may be filtered with `cancelled`/`uncancelled` or given an explicit priority."],
+      "patterns": ["[on] <.+>"],
+      "examples": ["on join:\n\tsend \"welcome\" to player"]
+    },
+    {
+      "id": "fallback.options",
+      "name": "Options",
+      "since": "1.0",
+      "description": ["Declares text substitutions for this script. An option is used as `{@name}` and is pasted in literally before parsing, so it may contain any code at all."],
+      "patterns": ["options"],
+      "examples": ["options:\n\tprefix: &6[Server]"]
+    },
+    {
+      "id": "fallback.variables",
+      "name": "Variables",
+      "since": "1.0",
+      "description": ["Gives variables a starting value the first time the script loads. Existing values are never overwritten."],
+      "patterns": ["variables"],
+      "examples": ["variables:\n\t{score::%player%} = 0"]
+    },
+    {
+      "id": "fallback.aliases",
+      "name": "Aliases",
+      "since": "1.0",
+      "description": ["Defines script-local names for groups of items."],
+      "patterns": ["aliases"],
+      "examples": ["aliases:\n\tores = iron ore, gold ore, diamond ore"]
+    },
+    {
+      "id": "fallback.using",
+      "name": "Using Experimental Feature",
+      "since": "2.9",
+      "description": ["Opts this script into an experimental Skript feature."],
+      "patterns": ["using [[the] experiment] <.+>"],
+      "examples": ["using script reflection"]
+    }
+  ],
+
+  "sections": [
+    {
+      "id": "fallback.if",
+      "name": "Conditional",
+      "since": "1.0",
+      "description": ["Runs its body only when the condition holds. `else if` and `else` continue the chain."],
+      "patterns": ["[parse] if <.+>", "else [parse] if <.+>", "else", "[parse] if [all]", "[parse] if (any|at least one [of])", "then [run]"],
+      "examples": ["if player is op:\n\tsend \"hello, admin\"\nelse:\n\tsend \"hello\""]
+    },
+    {
+      "id": "fallback.loop",
+      "name": "Loop",
+      "since": "1.0",
+      "description": ["Repeats its body once per value. Inside, `loop-value` is the current item, and `loop-index` its position; typed forms such as `loop-player` also work."],
+      "patterns": ["loop %objects%"],
+      "examples": ["loop all players:\n\tsend \"hi\" to loop-player"]
+    },
+    {
+      "id": "fallback.while",
+      "name": "While Loop",
+      "since": "1.0",
+      "description": ["Repeats its body for as long as the condition holds. `do while` checks the condition after the first run instead of before it."],
+      "patterns": ["[do] while <.+>"],
+      "examples": ["while {_n} < 10:\n\tadd 1 to {_n}"]
+    },
+    {
+      "id": "fallback.foreach",
+      "name": "For Each Loop",
+      "since": "2.10",
+      "description": ["Repeats its body once per value, binding the value to a variable you name. Requires `using for loops`."],
+      "patterns": ["(for [each]|loop) [value] %~object% in %objects%"],
+      "examples": ["for each {_item} in {_items::*}:\n\tsend \"%{_item}%\""]
+    },
+    {
+      "id": "fallback.delay",
+      "name": "Delay",
+      "since": "1.0",
+      "description": ["Pauses the trigger for a period. Anything after the wait runs later, so the event can no longer be cancelled."],
+      "patterns": ["(wait|halt) [for] %time span%"],
+      "examples": ["wait 5 seconds"]
+    }
+  ],
+
+  "effects": [
+    {
+      "id": "fallback.stop",
+      "name": "Stop",
+      "since": "1.0",
+      "description": ["Stops the current trigger immediately."],
+      "patterns": ["(stop|exit) [trigger]"],
+      "examples": ["stop"]
+    },
+    {
+      "id": "fallback.return",
+      "name": "Return",
+      "since": "2.2",
+      "description": ["Returns a value from a function and stops it."],
+      "patterns": ["return %objects%", "return"],
+      "examples": ["return {_total}"]
+    },
+    {
+      "id": "fallback.continue",
+      "name": "Continue",
+      "since": "2.2",
+      "description": ["Skips to the next iteration of the innermost loop."],
+      "patterns": ["continue [loop]"],
+      "examples": ["continue"]
+    },
+    {
+      "id": "fallback.exit-loop",
+      "name": "Exit Loop",
+      "since": "1.0",
+      "description": ["Leaves one or more enclosing loops."],
+      "patterns": ["exit %number% loops", "exit loop"],
+      "examples": ["exit loop"]
+    },
+    {
+      "id": "fallback.cancel",
+      "name": "Cancel Event",
+      "since": "1.0",
+      "description": ["Cancels the event being handled, so the server does not carry it out."],
+      "patterns": ["cancel [the] event", "uncancel [the] event"],
+      "examples": ["on damage:\n\tcancel event"]
+    }
+  ],
+
+  "expressions": [],
+  "conditions": [],
+  "events": [],
+  "types": [],
+  "functions": [],
+  "experiments": []
+}

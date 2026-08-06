@@ -1,0 +1,14 @@
+[package]
+name = "skript-addons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Detects which Skript addons a project's server has installed"
+
+[dependencies]
+# A JAR is a ZIP. Only deflate is needed — plugin manifests are tiny — and the
+# default feature set drags in several compression backends we never use.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]

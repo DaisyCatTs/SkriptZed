@@ -1,0 +1,424 @@
+//! Diagnostics.
+//!
+//! The brief asked for warnings that are *informative rather than noisy*, and
+//! for Skript that constraint does real work: any addon can register syntax we
+//! have never heard of, so "this line matched no known pattern" is a hint that
+//! must default to **off**. Turning it on by default would light up every
+//! script on every server that runs SkBee or DiSky.
+//!
+//! What is reported instead is only what is certainly wrong: indentation Skript
+//! itself would reject, calls to functions that do not exist anywhere in the
+//! workspace, duplicate declarations, and syntax upstream has marked deprecated.
+
+use skript_docs::Catalog;
+use skript_index::{Document, Position, Range, SymbolKind, Workspace};
+
+/// Severity, mirroring LSP's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+    Hint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub range: Range,
+    pub severity: Severity,
+    pub message: String,
+    pub code: &'static str,
+}
+
+/// What the user has switched on.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Report lines that match no known pattern. Off by default — see above.
+    pub unknown_syntax: bool,
+    /// Report syntax upstream has marked deprecated.
+    pub deprecated_syntax: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            unknown_syntax: false,
+            deprecated_syntax: true,
+        }
+    }
+}
+
+/// Produces diagnostics for one document.
+pub fn check(
+    document: &Document,
+    workspace: &Workspace,
+    catalog: Option<&Catalog>,
+    // `uninstalled` carries syntax from addons the server does not have. It is
+    // `None` whenever the environment is unknown, which is what keeps
+    // `requires-addon` from firing on a guess.
+    uninstalled: Option<&Catalog>,
+    options: Options,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+
+    check_indentation(document, &mut out);
+    check_block_comments(document, &mut out);
+    check_duplicate_declarations(document, &mut out);
+    check_unknown_functions(document, workspace, &mut out);
+
+    if let Some(catalog) = catalog {
+        check_catalog(document, catalog, uninstalled, options, &mut out);
+    }
+
+    out.sort_by_key(|diagnostic| {
+        (
+            diagnostic.range.start.line,
+            diagnostic.range.start.character,
+        )
+    });
+    out
+}
+
+/// Skript infers one indent unit per file from the first indented line, forbids
+/// mixing tabs and spaces inside a single indent, and requires every deeper
+/// line to be an exact multiple of that unit. The grammar is deliberately
+/// lenient about this so a half-typed file still parses; the strictness lives
+/// here, where it produces a message instead of a broken tree.
+fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
+    let mut unit: Option<&str> = None;
+
+    for (number, line) in document.text().lines().enumerate() {
+        let indent_len = line.len() - line.trim_start().len();
+        if indent_len == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let indent = &line[..indent_len];
+        let range = Range::new(
+            Position::new(number as u32, 0),
+            Position::new(number as u32, indent_len as u32),
+        );
+
+        if indent.contains(' ') && indent.contains('\t') {
+            out.push(Diagnostic {
+                range,
+                severity: Severity::Error,
+                message: "Indentation mixes tabs and spaces. Skript requires one or the other \
+                          within a single indent."
+                    .into(),
+                code: "mixed-indentation",
+            });
+            continue;
+        }
+
+        match unit {
+            None => unit = Some(indent),
+            Some(unit) => {
+                let same_kind = unit.starts_with(' ') == indent.starts_with(' ');
+                if !same_kind {
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Error,
+                        message: format!(
+                            "Indentation uses {} here but {} earlier in the file. Skript infers \
+                             one indent unit per script.",
+                            if indent.starts_with(' ') {
+                                "spaces"
+                            } else {
+                                "tabs"
+                            },
+                            if unit.starts_with(' ') {
+                                "spaces"
+                            } else {
+                                "tabs"
+                            },
+                        ),
+                        code: "inconsistent-indentation",
+                    });
+                } else if indent_len % unit.len() != 0 {
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Error,
+                        message: format!(
+                            "Indentation is {indent_len} characters, which is not a multiple of \
+                             this script's indent unit of {}.",
+                            unit.len()
+                        ),
+                        code: "indent-not-a-multiple",
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// A `###` block comment that is never closed swallows the rest of the file.
+fn check_block_comments(document: &Document, out: &mut Vec<Diagnostic>) {
+    let mut open_at: Option<u32> = None;
+
+    for (number, line) in document.text().lines().enumerate() {
+        if line.trim() != "###" {
+            continue;
+        }
+        open_at = match open_at {
+            Some(_) => None,
+            None => Some(number as u32),
+        };
+    }
+
+    if let Some(line) = open_at {
+        out.push(Diagnostic {
+            range: Range::new(Position::new(line, 0), Position::new(line, 3)),
+            severity: Severity::Error,
+            message: "This block comment is never closed. Add a line containing only `###`.".into(),
+            code: "unclosed-block-comment",
+        });
+    }
+}
+
+fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) {
+    let mut seen: Vec<(SymbolKind, String)> = Vec::new();
+
+    for symbol in document.symbols().flat() {
+        if !matches!(
+            symbol.kind,
+            SymbolKind::Function
+                | SymbolKind::LocalFunction
+                | SymbolKind::Command
+                | SymbolKind::Option
+        ) {
+            continue;
+        }
+        let key = (symbol.kind, symbol.name.clone());
+        if seen.contains(&key) {
+            out.push(Diagnostic {
+                range: symbol.selection_range,
+                severity: Severity::Error,
+                message: format!(
+                    "`{}` is declared more than once in this script.",
+                    symbol.name
+                ),
+                code: "duplicate-declaration",
+            });
+        } else {
+            seen.push(key);
+        }
+    }
+}
+
+fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut Vec<Diagnostic>) {
+    for reference in &document.symbols().references {
+        if reference.kind != SymbolKind::Function {
+            continue;
+        }
+        if workspace
+            .definitions(SymbolKind::Function, &reference.name, document.uri())
+            .is_empty()
+        {
+            out.push(Diagnostic {
+                range: reference.range,
+                severity: Severity::Error,
+                message: format!(
+                    "No function named `{}` is declared in this project.",
+                    reference.name
+                ),
+                code: "unknown-function",
+            });
+        }
+    }
+}
+
+/// Catalog-backed checks: deprecation, and optionally unrecognised syntax.
+fn check_catalog(
+    document: &Document,
+    catalog: &Catalog,
+    uninstalled: Option<&Catalog>,
+    options: Options,
+    out: &mut Vec<Diagnostic>,
+) {
+    for (number, raw) in document.text().lines().enumerate() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let code = trimmed.trim_end_matches(':');
+        let indent = (raw.len() - raw.trim_start().len()) as u32;
+        let range = Range::new(
+            Position::new(number as u32, indent),
+            Position::new(number as u32, raw.trim_end().len() as u32),
+        );
+
+        match catalog.classify_best(code) {
+            Some((id, _)) => {
+                if !options.deprecated_syntax {
+                    continue;
+                }
+                let Some(entry) = catalog.entry(id) else {
+                    continue;
+                };
+                if entry.is_deprecated() {
+                    let mut message = format!("`{}` is deprecated.", entry.name);
+                    if let Some(note) = entry.deprecated.note() {
+                        message.push(' ');
+                        message.push_str(&note);
+                    }
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Warning,
+                        message,
+                        code: "deprecated-syntax",
+                    });
+                }
+            }
+            None => {
+                // A line we cannot place might belong to an addon the server
+                // does not have. That is a far more useful thing to say than
+                // "unknown syntax", and it is only sayable because detection
+                // told us what is actually installed.
+                let from_addon = uninstalled
+                    .and_then(|rest| rest.classify_best(code))
+                    .and_then(|(id, _)| rest_entry_addon(uninstalled?, id));
+
+                if let Some((addon, since)) = from_addon {
+                    let version = since.map(|v| format!(" {v} or newer")).unwrap_or_default();
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Warning,
+                        message: format!(
+                            "This is `{addon}` syntax, and `{addon}`{version} is not installed on \
+                             this server."
+                        ),
+                        code: "requires-addon",
+                    });
+                } else if options.unknown_syntax {
+                    out.push(Diagnostic {
+                        range,
+                        severity: Severity::Hint,
+                        message: "This line does not match any known syntax. If it comes from an \
+                                  addon, add it to your server or list it in `addons`."
+                            .into(),
+                        code: "unknown-syntax",
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// The addon an uninstalled-catalog entry belongs to.
+fn rest_entry_addon(
+    catalog: &Catalog,
+    id: skript_docs::EntryId,
+) -> Option<(String, Option<String>)> {
+    let entry = catalog.entry(id)?;
+    let addon = entry.addon.as_ref()?;
+    Some((addon.name.clone(), addon.since_version.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_source(source: &str) -> Vec<Diagnostic> {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+        let document = workspace.get("file:///t.sk").unwrap();
+        // Borrowing the document out of the workspace it lives in is fine here
+        // because nothing mutates during the check.
+        let snapshot = Workspace::new();
+        let _ = &snapshot;
+        check(document, &workspace, None, None, Options::default())
+    }
+
+    fn codes(source: &str) -> Vec<&'static str> {
+        check_source(source).into_iter().map(|d| d.code).collect()
+    }
+
+    #[test]
+    fn accepts_ordinary_tab_indented_script() {
+        assert!(codes("on join:\n\tsend \"hi\"\n\tif {_x} is set:\n\t\tstop\n").is_empty());
+    }
+
+    #[test]
+    fn accepts_ordinary_space_indented_script() {
+        assert!(codes("on join:\n    send \"hi\"\n        stop\n").is_empty());
+    }
+
+    #[test]
+    fn rejects_tabs_and_spaces_in_one_indent() {
+        assert!(codes("on join:\n \tsend \"hi\"\n").contains(&"mixed-indentation"));
+    }
+
+    #[test]
+    fn rejects_switching_indent_character_mid_file() {
+        let found = codes("on join:\n\tsend \"a\"\non quit:\n    send \"b\"\n");
+        assert!(found.contains(&"inconsistent-indentation"));
+    }
+
+    #[test]
+    fn rejects_an_indent_that_is_not_a_multiple_of_the_unit() {
+        let found = codes("on join:\n    send \"a\"\n      send \"b\"\n");
+        assert!(found.contains(&"indent-not-a-multiple"));
+    }
+
+    #[test]
+    fn reports_an_unclosed_block_comment() {
+        assert!(codes("###\nnever closed\n").contains(&"unclosed-block-comment"));
+        assert!(!codes("###\nclosed\n###\n").contains(&"unclosed-block-comment"));
+    }
+
+    #[test]
+    fn reports_duplicate_functions_and_commands() {
+        let found = codes("function a():\n\tstop\n\nfunction a():\n\tstop\n");
+        assert!(found.contains(&"duplicate-declaration"));
+    }
+
+    #[test]
+    fn reports_a_call_to_a_function_that_does_not_exist() {
+        let found = codes("on join:\n\tset {_x} to missing_function()\n");
+        assert!(found.contains(&"unknown-function"));
+    }
+
+    #[test]
+    fn accepts_a_call_to_a_function_declared_in_the_same_file() {
+        let found = codes("function helper():\n\tstop\n\non join:\n\tset {_x} to helper()\n");
+        assert!(!found.contains(&"unknown-function"));
+    }
+
+    #[test]
+    fn unknown_syntax_is_off_by_default() {
+        // Any addon can register syntax we do not know; defaulting this on
+        // would flood every real server's scripts.
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", "on join:\n\tsome addon effect here\n");
+        let document = workspace.get("file:///t.sk").unwrap();
+        let catalog = Catalog::build(skript_docs::fallback_docs());
+
+        let quiet = check(
+            document,
+            &workspace,
+            Some(&catalog),
+            None,
+            Options::default(),
+        );
+        assert!(!quiet.iter().any(|d| d.code == "unknown-syntax"));
+
+        let loud = check(
+            document,
+            &workspace,
+            Some(&catalog),
+            None,
+            Options {
+                unknown_syntax: true,
+                ..Options::default()
+            },
+        );
+        assert!(loud.iter().any(|d| d.code == "unknown-syntax"));
+    }
+
+    #[test]
+    fn diagnostics_come_back_in_document_order() {
+        let found = check_source("on join:\n \tbad indent\n\tset {_x} to nope()\n");
+        for pair in found.windows(2) {
+            assert!(pair[0].range.start <= pair[1].range.start);
+        }
+    }
+}

@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  grammar:
+    name: Grammar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tree-sitter-skript/package-lock.json
+
+      - run: npm ci
+        working-directory: tree-sitter-skript
+
+      # The committed parser.c must match grammar.js. Zed compiles the committed
+      # file directly and never runs `tree-sitter generate`, so a stale one ships
+      # a grammar nobody reviewed.
+      - name: Check the committed parser is up to date
+        working-directory: tree-sitter-skript
+        run: |
+          ./node_modules/.bin/tree-sitter generate
+          git diff --exit-code -- src/ \
+            || (echo "::error::src/ is stale — run 'tree-sitter generate' and commit the result" && exit 1)
+
+      - name: Corpus tests
+        working-directory: tree-sitter-skript
+        run: ./node_modules/.bin/tree-sitter test
+
+      - name: Fetch the upstream script corpus
+        run: |
+          mkdir -p vendor
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/SkriptLang/Skript.git vendor/skript-corpus
+          cd vendor/skript-corpus
+          git sparse-checkout set src/test/skript src/main/resources/scripts
+
+      # ~540 real scripts, maintained by the people who define the language.
+      - name: Parse every upstream script
+        run: node scripts/parse-corpus.mjs --strict --all
+
+      - name: Parse the bundled examples
+        working-directory: tree-sitter-skript
+        run: ./node_modules/.bin/tree-sitter parse --quiet --stat ../examples/sample-project/*.sk
+
+  language-server:
+    name: Language server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: language-server
+
+      # Places docs.json so the pattern engine is tested against all 2,117 real
+      # patterns rather than only the hand-written ones. It is GPL-3.0 and is
+      # never committed, so the tests skip when this step is unavailable.
+      # Both databases are third-party data and are never committed. Without
+      # them the tests that exercise all 2,660 core and 12,877 addon patterns
+      # skip rather than fail.
+      - name: Fetch the syntax databases
+        run: |
+          node scripts/fetch-docs.mjs
+          node scripts/fetch-addons.mjs
+
+      - run: cargo fmt --all --check
+        working-directory: language-server
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: language-server
+      - run: cargo test --all
+        working-directory: language-server
+
+      # Exercises the assembled server against a real project on disk, which is
+      # the only way project-wide indexing and formatting get covered.
+      - name: End-to-end LSP session
+        run: |
+          cd language-server && cargo build -p skript-lsp
+          cd .. && node scripts/smoke-lsp.mjs
+
+  extension:
+    name: Zed extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: extension
+
+      # Zed builds extensions for wasm32-wasip2; a host-only build proves nothing.
+      - run: cargo build --release --target wasm32-wasip2
+        working-directory: extension
+
+      - name: Check the query files Zed will not load
+        run: |
+          # Zed reads exactly ten query files. folds.scm and locals.scm are
+          # silently ignored, so shipping one is a bug that hides a missing
+          # feature rather than an error.
+          for stray in folds locals embedding; do
+            if find extension/languages -name "$stray.scm" | grep -q .; then
+              echo "::error::extension/languages contains $stray.scm, which Zed does not load"
+              exit 1
+            fi
+          done
+
+  release:
+    name: Release binaries
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [grammar, language-server, extension]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install the cross linker
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - run: cargo build --release -p skript-lsp --target ${{ matrix.target }}
+        working-directory: language-server
+
+      # The asset names here must match what extension/src/lib.rs looks for.
+      - name: Package
+        shell: bash
+        run: |
+          cd language-server/target/${{ matrix.target }}/release
+          name="skript-lsp-${{ matrix.target }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "../../../../$name.zip" skript-lsp.exe
+          else
+            tar czf "../../../../$name.tar.gz" skript-lsp
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            skript-lsp-*.tar.gz
+            skript-lsp-*.zip

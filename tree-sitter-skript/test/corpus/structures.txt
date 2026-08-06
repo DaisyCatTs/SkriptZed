@@ -1,0 +1,245 @@
+================================================================================
+Event with implicit `on`
+================================================================================
+
+first join:
+	send "hi"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    name: (identifier)
+    name: (identifier)
+    body: (block
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Event with modifier and priority
+================================================================================
+
+on cancelled damage with priority high:
+	stop
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    modifier: (event_modifier)
+    name: (identifier)
+    priority: (event_priority)
+    body: (block
+      (statement
+        (identifier)))))
+
+================================================================================
+Command with arguments and entries
+================================================================================
+
+command /home <text> [<text>]:
+	description: Travel home.
+	permission: skript.home
+	trigger:
+		send "home"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (command
+    (keyword)
+    name: (command_name)
+    argument: (command_argument
+      (punctuation)
+      spec: (argument_spec)
+      (punctuation))
+    (punctuation)
+    argument: (command_argument
+      (punctuation)
+      spec: (argument_spec)
+      (punctuation))
+    (punctuation)
+    body: (entry_body
+      (entry
+        key: (entry_key)
+        value: (identifier)
+        value: (word))
+      (entry
+        key: (entry_key)
+        value: (word))
+      (entry_section
+        key: (entry_key)
+        body: (block
+          (statement
+            (identifier)
+            (string)))))))
+
+================================================================================
+Command without a leading slash
+================================================================================
+
+command broadcast:
+	trigger:
+		broadcast "x"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (command
+    (keyword)
+    name: (command_name)
+    body: (entry_body
+      (entry_section
+        key: (entry_key)
+        body: (block
+          (statement
+            (identifier)
+            (string)))))))
+
+================================================================================
+Function with the :: return marker
+================================================================================
+
+function give_apple(name: text, amount: number) :: item:
+	return {_item}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function
+    (keyword)
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type))
+      (parameter
+        name: (identifier)
+        type: (type)))
+    (return_marker)
+    return_type: (type)
+    body: (block
+      (statement
+        (identifier)
+        (variable
+          scope: (variable_scope)
+          name: (variable_name
+            (variable_text)))))))
+
+================================================================================
+Local function with the returns marker
+================================================================================
+
+local function points(p: player) returns number:
+	return 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function
+    (keyword)
+    (keyword)
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type)))
+    (return_marker)
+    return_type: (type)
+    body: (block
+      (statement
+        (identifier)
+        (number)))))
+
+================================================================================
+Function with an arrow return marker and a list default
+================================================================================
+
+function test(xs: integers = (1, 7)) -> integers:
+	return {_xs::*}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (function
+    (keyword)
+    name: (identifier)
+    parameters: (parameter_list
+      (parameter
+        name: (identifier)
+        type: (type)
+        default: (default_value)))
+    (return_marker)
+    return_type: (type)
+    body: (block
+      (statement
+        (identifier)
+        (variable
+          scope: (variable_scope)
+          name: (variable_name
+            (variable_text)
+            (list_separator)
+            (variable_text)))))))
+
+================================================================================
+Options, variables and aliases
+================================================================================
+
+options:
+	my server name: Server Name
+
+variables:
+	{score::%player%} = 100
+
+aliases:
+	pretty items = iron ingot, diamond
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (options
+    (keyword)
+    body: (entry_body
+      (entry
+        key: (entry_key)
+        value: (identifier)
+        value: (identifier))))
+  (variables
+    (keyword)
+    body: (assignment_body
+      (assignment
+        target: (variable
+          name: (variable_name
+            (variable_text)
+            (list_separator)
+            (interpolation
+              (interpolation_text))))
+        value: (number))))
+  (aliases
+    (keyword)
+    body: (assignment_body
+      (assignment
+        target: (alias_name)
+        value: (identifier)
+        value: (identifier)
+        value: (punctuation)
+        value: (identifier)))))
+
+================================================================================
+Bodyless structures
+================================================================================
+
+using script reflection
+automatically reload this script
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (using
+    (keyword)
+    feature: (experiment))
+  (auto_reload
+    (keyword)
+    (keyword)))

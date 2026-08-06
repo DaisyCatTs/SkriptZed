@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-skript",
+  "version": "0.1.0",
+  "description": "Skript grammar for tree-sitter",
+  "license": "MIT",
+  "keywords": ["parser", "tree-sitter", "skript", "minecraft"],
+  "repository": "https://github.com/DaisyCatTs/tree-sitter-skript",
+  "main": "bindings/node",
+  "files": ["grammar.js", "tree-sitter.json", "queries/*", "src/**"],
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.26.11"
+  }
+}

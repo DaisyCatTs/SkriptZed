@@ -1,0 +1,377 @@
+================================================================================
+String with interpolation, format tags and colour codes
+================================================================================
+
+on join:
+	send "&6Hello <red><bold>%player%<reset>!" to player
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string
+          (legacy_color)
+          (format_tag)
+          (format_tag)
+          (interpolation
+            (interpolation_text))
+          (format_tag))
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Hash inside a string is literal, not a comment
+================================================================================
+
+on join:
+	send "Item #1 costs 5#" to player
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Doubled quote and doubled percent escapes
+================================================================================
+
+on join:
+	send "he said ""hi"" and 50%% off"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string
+          (escape_sequence)
+          (escape_sequence)
+          (escape_sequence))))))
+
+================================================================================
+Interpolation containing a nested string
+================================================================================
+
+on join:
+	send "%uuid of world "world"%"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string
+          (interpolation
+            (interpolation_text)
+            (string)))))))
+
+================================================================================
+Hex format tag
+================================================================================
+
+on join:
+	send "<#FF00AA>red" to player
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string
+          (format_tag))
+        (identifier)
+        (identifier)))))
+
+================================================================================
+Variable scopes
+================================================================================
+
+on join:
+	set {global} to 1
+	set {_local} to 2
+	set {-ephemeral} to 3
+	set {list::*} to 4
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number))
+      (statement
+        (identifier)
+        (variable
+          (variable_name
+            (variable_text)
+            (list_separator)
+            (variable_text)))
+        (identifier)
+        (number)))))
+
+================================================================================
+Nested variable inside a variable name
+================================================================================
+
+on join:
+	set {_test::{_x}} to 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)
+            (list_separator)
+            (variable
+              (variable_scope)
+              (variable_name
+                (variable_text)))))
+        (identifier)
+        (number)))))
+
+================================================================================
+Hash inside a variable name is literal
+================================================================================
+
+on join:
+	set {count##} to 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number)))))
+
+================================================================================
+Option reference
+================================================================================
+
+on join:
+	send "Welcome to {@my server name}"
+	if {@condition}:
+		stop
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string))
+      (section
+        (identifier)
+        (option_ref
+          (option_name))
+        (block
+          (statement
+            (identifier)))))))
+
+================================================================================
+Numbers, booleans and durations
+================================================================================
+
+on join:
+	set {_a} to 5
+	set {_b} to -2.5
+	set {_c} to true
+	wait 3 seconds
+	wait 1 tick
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (number))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (boolean))
+      (statement
+        (identifier)
+        (duration))
+      (statement
+        (identifier)
+        (duration)))))
+
+================================================================================
+Words that merely start with a keyword are not keywords
+================================================================================
+
+on join:
+	set {_a} to truely
+	set {_b} to skript.home
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (word)))))
+
+================================================================================
+Loop, event and argument references
+================================================================================
+
+on join:
+	loop all players:
+		send "%loop-player% %loop-index%" to event-player
+	send arg-1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (section
+        (identifier)
+        (identifier)
+        (identifier)
+        (block
+          (statement
+            (identifier)
+            (string
+              (interpolation
+                (interpolation_text))
+              (interpolation
+                (interpolation_text)))
+            (identifier)
+            (event_value))))
+      (statement
+        (identifier)
+        (command_arg_ref)))))
+
+================================================================================
+Function call
+================================================================================
+
+on join:
+	set {_item} to give_apple("Banana", 4)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (function_call
+          (identifier)
+          (string)
+          (punctuation)
+          (number))))))

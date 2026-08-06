@@ -1,0 +1,288 @@
+================================================================================
+Nested blocks three levels deep
+================================================================================
+
+on join:
+	if {_a} is set:
+		if {_b} is set:
+			send "deep"
+		send "middle"
+	send "outer"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (section
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier)
+        (block
+          (section
+            (identifier)
+            (variable
+              (variable_scope)
+              (variable_name
+                (variable_text)))
+            (identifier)
+            (identifier)
+            (block
+              (statement
+                (identifier)
+                (string))))
+          (statement
+            (identifier)
+            (string))))
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Dedent back to top level
+================================================================================
+
+on join:
+	send "a"
+
+on quit:
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string))))
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Blank lines inside a block do not close it
+================================================================================
+
+on join:
+	send "a"
+
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string))
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Space-indented script
+================================================================================
+
+on join:
+    if {_a} is set:
+        send "spaces"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (section
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier)
+        (block
+          (statement
+            (identifier)
+            (string)))))))
+
+================================================================================
+Trailing comment on a section header
+================================================================================
+
+on join: # a note
+	send "a" # another note
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (comment)
+    (block
+      (statement
+        (identifier)
+        (string)
+        (comment)))))
+
+================================================================================
+Standalone comment inside a block
+================================================================================
+
+on join:
+	send "a"
+	# a standalone comment
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string))
+      (comment)
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+An outdented comment closes the block
+================================================================================
+
+on join:
+	send "a"
+# back at column zero
+on quit:
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string))))
+  (comment)
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Block comment
+================================================================================
+
+###
+this is ignored
+and so is "this": and this
+###
+on join:
+	send "a"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (block_comment)
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Three hashes with trailing text is an ordinary comment
+================================================================================
+
+### not a delimiter
+on join:
+	send "a"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (comment)
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+The #-# marker stops a trailing colon from opening a section
+================================================================================
+
+on join:
+	send "a:" to player #-#
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)
+        (identifier)
+        (identifier)
+        (comment))
+      (statement
+        (identifier)
+        (string)))))
+
+================================================================================
+Empty section
+================================================================================
+
+on join:
+
+on quit:
+	send "b"
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier))
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (statement
+        (identifier)
+        (string)))))

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "skript",
+      "camelcase": "Skript",
+      "scope": "source.skript",
+      "path": ".",
+      "file-types": ["sk"],
+      "highlights": ["queries/highlights.scm"],
+      "injections": ["queries/injections.scm"],
+      "injection-regex": "^(sk|skript)$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Skript grammar for tree-sitter",
+    "authors": [{ "name": "Daisy" }],
+    "links": {
+      "repository": "https://github.com/DaisyCatTs/tree-sitter-skript"
+    }
+  },
+  "bindings": {
+    "c": true,
+    "go": false,
+    "node": false,
+    "python": false,
+    "rust": true,
+    "swift": false
+  }
+}

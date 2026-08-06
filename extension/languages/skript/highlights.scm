@@ -77,11 +77,14 @@
 ; An event header names the event, so the whole name is coloured. This is safe
 ; in a way that colouring statement prose is not: the header of a top-level
 ; section is always an event name and never a user expression.
+; The `name:` field repeats — `on first join` has two `name:` children, one per
+; word. Without the `+` the pattern matched once and coloured only `first`,
+; leaving `join` plain on every multi-word event in the language.
 (event
   name: [
     (identifier)
     (word)
-  ] @function)
+  ]+ @function)
 
 (command
   name: (command_name) @function)
@@ -128,14 +131,31 @@
 
 ; ------------------------------------------------------------------ variables
 
+; Every variable is a variable. The two refinements below are *positive*
+; `#match?` tests, so a theme defining neither still renders every scope as
+; `@variable` — the failure mode is today's appearance, not a blank one.
+;
+; Global is the *absence* of a scope sigil, and a tree-sitter query cannot ask
+; for a missing child; anchors are no help either, since they ignore anonymous
+; nodes. Testing the variable's own text is the only positive form available.
 (variable) @variable
 
-; `_` marks a local and `-` an ephemeral variable; both are scope sigils.
-(variable_scope) @punctuation.special
+; `{x}` — no sigil. A global: Skript persists it to variables.csv and it
+; outlives a restart. The only scope whose effect escapes the current trigger,
+; so it is the one worth seeing at a glance.
+((variable) @variable.special
+  (#match? @variable.special "^\\{[^-_}]"))
 
-(variable
-  name: (variable_name
-    (variable_text) @variable))
+; `{-x}` — ephemeral. Never saved, discarded on reload.
+((variable) @variable.member
+  (#match? @variable.member "^\\{-"))
+
+; `{_x}` — local to the running trigger. The workhorse, and deliberately left
+; as plain `@variable` by the base capture above.
+
+; `_` marks a local and `-` an ephemeral variable; both are scope sigils rather
+; than part of the name.
+(variable_scope) @punctuation.special
 
 ; `{@option}` is substituted before parsing, so it is a compile-time constant
 ; rather than a variable.
@@ -159,13 +179,21 @@
 
 (string) @string
 
+; `""` and `%%` — Skript escapes by doubling. These are escapes.
 (escape_sequence) @string.escape
 
-; `<red>`, `<bold>`, `<#FF00AA>`, `<link:…>` inside a string.
+; `<red>`, `<bold>`, `<#FF00AA>`, `<link:…>`.
 (format_tag) @string.special
 
-; Legacy `&6` colour codes and `&#RRGGBB`.
-(legacy_color) @string.escape
+; A tag carrying a URL or a command rather than a colour. Refinement of
+; `string.special`, so it degrades to it wherever `url` is undefined.
+((format_tag) @string.special.url
+  (#match? @string.special.url "^<(link|url|cmd|sgt|suggest_command|run_command|open_url|insertion):"))
+
+; Legacy `&6` colour codes and `&#RRGGBB`. These are *formatting*, not escapes —
+; sharing `@string.escape` with the doubling escapes above made a colour code
+; and a literal quote indistinguishable. Both roots fall back to `string`.
+(legacy_color) @string.special.symbol
 
 ; `%…%` re-enters code context inside a string, so its contents read as code and
 ; its delimiters as the boundary between the two.
@@ -174,6 +202,13 @@
 
 (interpolation
   (interpolation_text) @embedded)
+
+; `%arg-1%`, `%loop-value%`, `%event-player%`. The grammar keeps an
+; interpolation's contents as one blob, but these are the same builtins that get
+; `@variable.builtin` outside a string and should read the same way inside one.
+((interpolation
+   (interpolation_text) @variable.builtin)
+  (#match? @variable.builtin "^(arg(ument)?-|loop-|event-)"))
 
 ; ---------------------------------------------------------------- control flow
 
@@ -185,9 +220,12 @@
   header: (identifier) @keyword.conditional @keyword
   (#any-of? @keyword.conditional "if" "else" "then"))
 
+; `do` is here because `do while …` gives the section two `header:` children.
+; Matching only the first meant neither word coloured: the predicate was tested
+; against `do`, failed, and the match was dropped before `while` was reached.
 (section
   header: (identifier) @keyword.repeat @keyword
-  (#any-of? @keyword.repeat "loop" "while" "every" "for" "each"))
+  (#any-of? @keyword.repeat "loop" "while" "every" "for" "each" "do"))
 
 ; `return`, `stop`, `exit` and `continue` only ever start a line.
 (statement
@@ -205,3 +243,55 @@
 ; rather than `identifier`.
 ((word) @keyword.operator @operator
   (#match? @keyword.operator "^(isn't|aren't|wasn't|weren't|doesn't|don't)$"))
+
+; -------------------------------------------------------- structural punctuation
+
+; The `:` separating an entry key from its value, the `=` of a `variables:` or
+; `aliases:` assignment, and a parameter list's separators. These are structural
+; in Skript the way a comma in an argument list is; leaving them plain made
+; `permission: skript.home` render as two unrelated fragments.
+(entry ":" @punctuation.delimiter)
+
+(assignment "=" @operator)
+
+(parameter ":" @punctuation.delimiter)
+(parameter "=" @operator)
+(parameter_list "," @punctuation.delimiter)
+
+; `amount: number = 1`, `xs: integers = (1, 7)`.
+;
+; The grammar keeps the value as one node on purpose: splitting `(1, 7)` into
+; real literals collides with `parameter_list`'s own comma, so it is coloured
+; whole rather than structured.
+(default_value) @constant
+
+(default_value
+  [
+    "("
+    ")"
+  ] @punctuation.bracket)
+
+; ------------------------------------------------------- command entry values
+
+; The literal-text entries of a command. Skript parses these as a
+; `VariableString` rather than as code, so colouring them as text is a statement
+; about the language, not a coverage trick.
+;
+; Nesting under `command` is what keeps them apart from an `options:` block,
+; whose values are pasted in before parsing and genuinely may be code — an
+; option may even be *named* `description`. `value:` repeats once per token, so
+; the quantifier is required or only the first word colours.
+((command
+   body: (entry_body
+     (entry
+       key: (entry_key) @_entry_key
+       value: (_)+ @string)))
+  (#any-of? @_entry_key
+    "description" "usage" "permission message" "cooldown message"
+    "prefix" "aliases" "executable by"))
+
+; An alias definition names item types rather than executing anything.
+(aliases
+  body: (assignment_body
+    (assignment
+      value: (_)+ @constant)))

@@ -375,3 +375,99 @@ on join:
           (string)
           (punctuation)
           (number))))))
+
+================================================================================
+Colour codes and format tags outside a string
+================================================================================
+
+options:
+	prefix: &6[Server]&r
+	title: <red><bold>Server</bold>
+	hexed: &#FF00AA text
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (options
+    (keyword)
+    (entry_body
+      (entry
+        (entry_key)
+        (legacy_color)
+        (punctuation)
+        (identifier)
+        (punctuation)
+        (legacy_color))
+      (entry
+        (entry_key)
+        (format_tag)
+        (format_tag)
+        (identifier)
+        (format_tag))
+      (entry
+        (entry_key)
+        (legacy_color)
+        (identifier)))))
+
+================================================================================
+Outside a string, `<` and `&` are still operators
+================================================================================
+
+on join:
+	while {_x} < 5 and {_y} > 3:
+		add 1 to {_x}
+	set {_s} to a & b
+	set {_t} to a &z b
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    (identifier)
+    (block
+      (section
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (operator)
+        (number)
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (operator)
+        (number)
+        (block
+          (statement
+            (identifier)
+            (number)
+            (identifier)
+            (variable
+              (variable_scope)
+              (variable_name
+                (variable_text))))))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier)
+        (operator)
+        (identifier))
+      (statement
+        (identifier)
+        (variable
+          (variable_scope)
+          (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier)
+        (operator)
+        (identifier)
+        (identifier)))))

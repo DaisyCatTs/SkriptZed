@@ -1,0 +1,11 @@
+# A second file, so cross-file behaviour is visible: `format_points` is used by
+# showcase.sk, and go-to-definition should jump here from there.
+
+function format_points(amount: number) :: text:
+	if {_amount} > 1000:
+		return "%{_amount} / 1000% k"
+	return "%{_amount}%"
+
+# Declared `local`, so a reference from showcase.sk must NOT resolve to it.
+local function debug_only() :: text:
+	return "internal"

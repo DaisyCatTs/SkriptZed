@@ -1,0 +1,120 @@
+###
+This file exists to be looked at, not run.
+
+It exercises every construct the extension claims to handle, so that opening it
+in Zed is a one-glance check that highlighting, indentation, folding and the
+outline all behave. Each section notes what it is testing.
+###
+
+# ---------------------------------------------------------------- structures
+
+options:
+	prefix: &6[Server]&r
+	# An option's value is raw text, pasted in before parsing — it can hold code.
+	is staff: player has permission "server.staff"
+
+variables:
+	{stats::joins} = 0
+	{config::motd} = "Welcome!"
+
+aliases:
+	precious = diamond, emerald, netherite ingot
+
+# ----------------------------------------------------------------- functions
+
+# All three return markers are valid Skript. All three should highlight.
+function greet(name: text) :: text:
+	return "Hello, %{_name}%!"
+
+function add_points(who: player, amount: number = 1) -> number:
+	add {_amount} to {points::%{_who}%}
+	return {points::%{_who}%}
+
+local function internal_helper() returns boolean:
+	# `local` means this is invisible to other scripts — go-to-definition from
+	# another file must NOT find it.
+	return true
+
+# ------------------------------------------------------------------ commands
+
+command /home <text> [<text>]:
+	description: Set, delete or travel to your home.
+	usage: /home set/remove <name>, /home <name>
+	permission: skript.home
+	permission message: You cannot do that.
+	aliases: /h
+	executable by: players
+	cooldown: 3 seconds
+	cooldown message: Wait %remaining time%.
+	trigger:
+		if arg-1 is "set":
+			set {homes::%uuid of player%::%arg-2%} to player's location
+			send "{@prefix} Home &a%arg-2%&r saved." to player
+		else if arg-1 is "remove":
+			delete {homes::%uuid of player%::%arg-2%}
+		else:
+			teleport player to {homes::%uuid of player%::%arg-1%}
+
+# -------------------------------------------------------------------- events
+
+on join:
+	add 1 to {stats::joins}
+	send greet(player's name) to player
+
+on first join:
+	broadcast "{@prefix} &e%player% joined for the first time!"
+
+# The modifier follows `on`, and the priority follows the event name.
+on cancelled damage with priority high:
+	stop
+
+# ------------------------------------------------------------ control flow
+
+on quit:
+	# Loops bind `loop-value`, `loop-index`, and typed forms like `loop-player`.
+	loop all players:
+		if loop-player has permission "server.staff":
+			send "&7%player% left." to loop-player
+
+	set {_items::*} to stone, oak planks and an apple
+	loop {_items::*}:
+		send "%loop-index%. %loop-value%"
+
+	set {_n} to 0
+	while {_n} < 3:
+		add 1 to {_n}
+
+	do while false is true:
+		send "runs exactly once"
+
+# ------------------------------------------------------- strings and colours
+
+on chat:
+	# Legacy `&6` codes, `<tag>` formats, hex colours, and `%interpolation%`.
+	send "&6gold <red><bold>red bold<reset> <#FF00AA>hex %player%"
+	# A `#` inside a string is literal — this whole line is one string, not a
+	# comment, and a `:` inside it does not open a section.
+	send "Item #1 costs 5# and the ratio is 3:1"
+	# Doubled quotes and doubled percent signs are the escapes.
+	send "he said ""hi"" and took 50%% of it"
+	# A variable name may contain a hash, and may nest another variable.
+	set {count##} to 1
+	set {_lookup::{_key}} to true
+
+# --------------------------------------------------------- the #-# marker
+
+on sneak toggle:
+	# Without the marker, a trailing colon would open a section. With it, this
+	# stays an ordinary statement and the next line does NOT indent.
+	send "ratio 3:" to player #-#
+	send "still in the same block"
+
+# ----------------------------------------------------------------- literals
+
+on world save:
+	set {_number} to 42
+	set {_decimal} to -2.5
+	set {_flag} to true
+	wait 5 seconds
+	wait 1 tick
+	set {_percent} to 50

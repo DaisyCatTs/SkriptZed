@@ -1,0 +1,45 @@
+name: Highlighting or indentation is wrong
+description: A .sk file is coloured, indented or folded incorrectly
+labels: ["bug", "grammar"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If Skript itself accepts the file and this grammar reports an `ERROR`,
+        that is a bug regardless of how unusual the syntax looks.
+
+        Note that ordinary statement prose is **deliberately** not coloured by
+        the grammar — that is the language server's job, and it needs
+        `"semantic_tokens": "combined"` in your Zed settings. If most of your
+        file is grey, check that setting before filing.
+  - type: textarea
+    id: snippet
+    attributes:
+      label: The smallest .sk snippet that reproduces it
+      render: sk
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen, and what happened instead
+    validations:
+      required: true
+  - type: textarea
+    id: parse
+    attributes:
+      label: Parse tree (optional but very helpful)
+      description: |
+        From a clone: `cd tree-sitter-skript && ./node_modules/.bin/tree-sitter parse broken.sk`
+      render: shell
+  - type: input
+    id: zed
+    attributes:
+      label: Zed version
+    validations:
+      required: true
+  - type: input
+    id: theme
+    attributes:
+      label: Theme
+      description: Only relevant for colour problems.

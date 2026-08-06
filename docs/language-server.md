@@ -17,6 +17,8 @@ single static binary per platform.
 | `textDocument/completion` | Context-aware; patterns insert as snippets |
 | `textDocument/formatting` | Re-indents from the parse tree; refuses to touch a file that does not parse |
 | `textDocument/signatureHelp` | Parameter hints inside a function call |
+| `textDocument/inlayHint` | Parameter names at call sites, read from the declaration |
+| `textDocument/documentHighlight` | Every occurrence of the symbol under the cursor |
 | `textDocument/semanticTokens/full` | Effects, conditions, expressions, events |
 | `textDocument/publishDiagnostics` | See below |
 
@@ -81,8 +83,9 @@ of most scripts on any real server. Turn it on only alongside `docsPath`.
 
 ## Syntax data
 
-Fetched from `https://docs.skriptlang.org/docs.json` at startup — 1,208 entries,
-2,117 patterns, no API key — and cached for 24 hours in the OS temp directory.
+Fetched from `https://docs.skriptlang.org/docs.json` at startup — 1,222 entries,
+2,660 patterns, no API key — and cached for 24 hours in the platform cache
+directory (`%LOCALAPPDATA%`, `~/Library/Caches`, or `$XDG_CACHE_HOME`).
 Version-pinned archives live at `/archives/<version>/docs.json`.
 
 It is **never vendored**: the database is GPL-3.0 and this project is MIT, and
@@ -104,8 +107,8 @@ SkriptHub instead — see [addons.md](addons.md).
 | | |
 |---|---|
 | Startup | Immediate; the catalog loads on a background task |
-| Line classification | ~433 µs in a debug build, across 2,117 patterns |
-| Index narrowing | ~170 of 2,117 candidate patterns per line |
+| Line classification | ~272 µs in a release build, against the full core catalog |
+| Index narrowing | ~170 candidates per line, about 6% of the catalog |
 | Document update | Full reparse, ~9 MB/s |
 
 The matcher runs on a step budget, so a pathological line reports "no match"

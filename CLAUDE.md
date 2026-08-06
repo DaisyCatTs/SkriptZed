@@ -6,9 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `PROGRESS.md` at the repo root is the live status document: what is built, what
 is verified, the source-verified Zed/Skript facts the design rests on, and the
-ordered next steps. `docs/PLAN.md` is the approved plan. Read `PROGRESS.md`
-before starting work — most "how do I…" and "why is it like this?" questions are
-already answered there, and re-deriving that research is expensive.
+ordered next steps. Read it before starting work — most "how do I…" and "why is
+it like this?" questions are already answered there, and re-deriving that
+research is expensive.
+
+(The original design brief lived at `docs/PLAN.md`. It was deleted before the
+first release: it described three components that were never built, and it sat
+among user-facing documentation written in the future tense. Everything in it
+that is still true is in `docs/architecture.md` and `docs/grammar.md`.)
 
 ## Commands
 
@@ -74,7 +79,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 
 node scripts/fetch-docs.mjs          # places vendor/docs.json (GPL-3.0, gitignored)
-                                 # so the 2,117-pattern tests run instead of skipping
+                                 # so the full-catalog tests run instead of skipping
 node scripts/smoke-lsp.mjs       # end-to-end LSP session against the real binary
 ```
 
@@ -97,7 +102,7 @@ and symbols), `skript-format`, and `skript-lsp` (the binary).
 
 Skript has **no context-free grammar**. Every effect, condition, expression,
 event and section is a pattern string registered at *runtime* by Skript or an
-addon — 2,117 patterns in core Skript 2.16 alone. Nothing lexical distinguishes
+addon — 2,660 patterns in core Skript 2.16 alone. Nothing lexical distinguishes
 `set {_x} to 5` (an effect) from `player is op` (a condition).
 
 Everything follows from that split:

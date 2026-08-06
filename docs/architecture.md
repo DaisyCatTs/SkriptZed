@@ -6,7 +6,7 @@ Skript has **no context-free grammar**.
 
 Every effect, condition, expression, event and section is a *pattern string*
 registered at runtime by Skript or by an addon, and matched against the line by
-`SkriptParser`. Core Skript 2.16 publishes **2,117 patterns across 1,208
+`SkriptParser`. Core Skript 2.16 publishes **2,660 patterns across 1,222
 entries**; SkBee alone adds hundreds more, and any server may load a dozen
 addons.
 
@@ -42,7 +42,7 @@ addon it has not been taught about.
 │    parses Skript's pattern DSL, matches lines against it       │
 ├────────────────────────────────────────────────────────────────┤
 │  skript-docs           the catalog                             │
-│    docs.json fetched at runtime → 2,117 indexed patterns       │
+│    docs.json fetched at runtime → every published pattern      │
 │    → hover · completion · deprecation                          │
 └───────────────────────────┬────────────────────────────────────┘
                             │ LSP
@@ -78,7 +78,8 @@ grammar.
 
 ## The pattern engine
 
-Matching a line against 2,117 patterns naively is far too slow for a keystroke.
+Matching a line against every published pattern naively is far too slow for a
+keystroke.
 `skript-syntax` does three things:
 
 1. **Parse** each pattern into a small node tree — literals, `[optional]`,
@@ -86,7 +87,8 @@ Matching a line against 2,117 patterns naively is far too slow for a keystroke.
    stripped.
 2. **Invert** on the *rarest required literal*. A pattern is only a candidate
    for a line if every literal it requires appears in that line, so indexing on
-   the rarest one narrows ~2,117 patterns to ~170 per line.
+   the rarest one narrows the whole catalog to roughly 170 candidates per line —
+   about 6% of it. (Measured against Skript 2.16.1's database.)
 3. **Match** the survivors with a lazy backtracker — slots take the fewest
    tokens that let the rest of the pattern fit — and rank by specificity.
 

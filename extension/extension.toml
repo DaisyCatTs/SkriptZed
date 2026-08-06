@@ -2,9 +2,9 @@ id = "skript"
 name = "Skript"
 version = "0.1.0"
 schema_version = 1
-description = "Skript language support — tree-sitter grammar with real indentation handling, outline, snippets, and the skript-lsp language server."
+description = "Skript language support for Minecraft servers — syntax highlighting, autocomplete, hover docs, diagnostics and go-to-definition for .sk files."
 repository = "https://github.com/DaisyCatTs/SkriptZed"
-authors = ["Daisy"]
+authors = ["Daisy <https://github.com/DaisyCatTs>"]
 
 snippets = ["./snippets/skript.json"]
 

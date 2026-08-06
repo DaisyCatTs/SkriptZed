@@ -1,27 +1,48 @@
 # Publishing
 
-## 1. Split the grammar out
+## 1. The grammar stays in this repository
 
-Zed clones the grammar from a URL at a pinned revision, so it must be its own
-public repository before release. `tree-sitter-skript/` is already
-self-contained — it has no imports from the rest of this monorepo.
+An earlier version of this document said the grammar had to be split into its
+own repository before release. **That is wrong**, and following it would break a
+working configuration.
 
-```sh
-git subtree split --prefix=tree-sitter-skript -b grammar-only
-# push that branch to https://github.com/DaisyCatTs/tree-sitter-skript
-```
-
-Confirm the generated sources are committed — `src/parser.c`,
-`src/grammar.json`, `src/node-types.json`, `src/tree_sitter/*.h`. Zed runs clang
-on them directly and never invokes `tree-sitter generate`; a repository that
-gitignores `src/` cannot be used as a Zed grammar at all.
-
-Then point `extension.toml` at it:
+Zed clones a grammar with `git remote add origin <repository>` +
+`git fetch --depth 1 origin <rev>`, then runs clang on the checked-out sources.
+It does not require the grammar to sit at the repository root: the `path` key
+names a subdirectory, and that is what ships.
 
 ```toml
 [grammars.skript]
-repository = "https://github.com/DaisyCatTs/tree-sitter-skript"
-rev = "<the commit you just pushed>"
+repository = "https://github.com/DaisyCatTs/SkriptZed"
+rev = "<a commit that exists on GitHub>"
+path = "tree-sitter-skript"
+```
+
+This is supported by Zed's own `extension_builder.rs`, and Civet, cfml and
+`zed-extensions/php` all publish grammars from a subdirectory this way. There is
+no separate `tree-sitter-skript` repository and there does not need to be.
+
+Two things this *does* still demand:
+
+* **`rev` must name a commit reachable on GitHub**, and preferably one on
+  `main`. A commit that exists only on a feature branch resolves until that
+  branch is deleted, after which every install fails at grammar-fetch time with
+  no highlighting and nothing in the error to explain why. `scripts/dev-setup.mjs`
+  rewrites `repository` and `rev` to a local `file://` URL and a local commit —
+  never release that rewrite.
+* **The generated sources must be committed** — `src/parser.c`,
+  `src/grammar.json`, `src/node-types.json`, `src/tree_sitter/*.h`. Zed never
+  invokes `tree-sitter generate`; a repository that gitignores `src/` cannot be
+  used as a Zed grammar at all. CI enforces this.
+
+Verify before every release by replaying exactly what Zed does, from an empty
+directory:
+
+```sh
+git init tmp && cd tmp
+git remote add origin https://github.com/DaisyCatTs/SkriptZed
+git fetch --depth 1 origin <rev> && git checkout FETCH_HEAD
+ls tree-sitter-skript/src/parser.c
 ```
 
 ## 2. Release the language server
@@ -87,9 +108,13 @@ Bump `version` in **both** `extension.toml` and `extensions.toml`.
 
 ## Checklist
 
-- [ ] `[grammars.skript]` uses the public HTTPS URL, not the `file://` one that
-      `dev-setup.mjs` writes
+- [ ] `[grammars.skript]` uses the public HTTPS URL with `path = "tree-sitter-skript"`,
+      not the `file://` one that `dev-setup.mjs` writes
+- [ ] `rev` names a commit **on `main`** — verified by replaying the fetch from
+      an empty directory, not by assuming
 - [ ] Generated parser sources are committed and current
+- [ ] The extension has been installed and used as a dev extension on a clean
+      machine. The registry closes untested submissions without feedback.
 - [ ] `extension/LICENSE` exists
 - [ ] The `download_file` capability path matches the release repository
 - [ ] `cargo build --release --target wasm32-wasip2` succeeds

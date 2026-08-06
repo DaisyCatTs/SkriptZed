@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question about Skript itself
+    url: https://docs.skriptlang.org
+    about: Syntax questions, "how do I do X in Skript" — SkriptLang's docs and Discord, not this extension.
+  - name: Zed itself is misbehaving
+    url: https://github.com/zed-industries/zed/issues
+    about: Editor bugs unrelated to Skript belong upstream.
+  - name: Most of my file is grey
+    url: https://github.com/DaisyCatTs/SkriptZed#install
+    about: Set "semantic_tokens" to "combined" — Zed ships it off by default.

@@ -1,0 +1,36 @@
+name: An addon isn't recognised
+description: Syntax from an addon gets no hover, completion or classification
+labels: ["addons"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Unknown addon syntax is never reported as an error — it is simply left
+        unclassified. This template is for asking that an addon be recognised.
+  - type: input
+    id: addon
+    attributes:
+      label: Addon name and version
+    validations:
+      required: true
+  - type: input
+    id: link
+    attributes:
+      label: Where it is downloaded from
+    validations:
+      required: true
+  - type: dropdown
+    id: skripthub
+    attributes:
+      label: Is it listed on SkriptHub?
+      options:
+        - "Yes"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: An example line that should be recognised
+      render: sk

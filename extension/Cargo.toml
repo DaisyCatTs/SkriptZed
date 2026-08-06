@@ -1,0 +1,16 @@
+[package]
+name = "zed_skript"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+# 0.7.0 is the newest version Zed stable accepts: `wasm_host/wit.rs` caps
+# Stable/Preview at `since_v0_6_0::MAX_VERSION`. 0.8.0 exists in the Zed tree
+# but is marked `publish = false`.
+zed_extension_api = "0.7.0"

@@ -1,0 +1,34 @@
+id = "skript"
+name = "Skript"
+version = "0.1.0"
+schema_version = 1
+description = "Skript language support — tree-sitter grammar with real indentation handling, outline, snippets, and the skript-lsp language server."
+repository = "https://github.com/DaisyCatTs/SkriptZed"
+authors = ["Daisy"]
+
+snippets = ["./snippets/skript.json"]
+
+# During development this points at the local grammar checkout. Zed resolves it
+# with `git remote add origin <repository>` + `git fetch --depth 1 origin <rev>`,
+# so a `file://` URL works but `rev` must still name a real commit — run
+# `scripts/dev-setup.mjs` to create one and rewrite the value below.
+#
+# Before publishing, replace `repository` with the public HTTPS URL of the
+# split-out tree-sitter-skript repository.
+[grammars.skript]
+repository = "file:///C:/Users/Daisy/Desktop/ZedSkript/tree-sitter-skript"
+rev = "32284844fa193e85e907b3ed87e2e7ed092df8d6"
+
+[language_servers.skript-lsp]
+name = "Skript Language Server"
+languages = ["Skript"]
+
+[language_servers.skript-lsp.language_ids]
+Skript = "skript"
+
+# Needed to fetch a release build of skript-lsp when the user has not installed
+# one themselves. Zed gates this behind the user's granted capabilities.
+[[capabilities]]
+kind = "download_file"
+host = "github.com"
+path = ["DaisyCatTs", "SkriptZed", "**"]

@@ -1,0 +1,49 @@
+// Maps the language server's semantic tokens onto theme style names.
+//
+// This is where Skript actually becomes readable. The tree-sitter grammar
+// cannot tell an effect from a condition from an expression — they are all
+// runtime-registered patterns — so highlights.scm leaves statement prose
+// uncoloured and skript-lsp classifies it here instead.
+//
+// Every rule names *theme styles*, never colours. The `style` array is a
+// fallback chain: Zed uses the first name the active theme defines, so a theme
+// that has `keyword.conditional` gets the refined colour and one that only has
+// `keyword` still gets something sensible.
+//
+// NOTE: Zed's `semantic_tokens` setting defaults to "off". Users must set
+//   { "languages": { "Skript": { "semantic_tokens": "combined" } } }
+// to see any of this. See docs/theming.md.
+[
+  // ---- Skript's own syntax categories, straight from docs.json --------------
+  { "token_type": "skriptEffect", "style": ["function", "keyword"] },
+  { "token_type": "skriptCondition", "style": ["keyword.conditional", "keyword"] },
+  { "token_type": "skriptExpression", "style": ["property", "variable"] },
+  { "token_type": "skriptEvent", "style": ["function.builtin", "function"] },
+  { "token_type": "skriptSection", "style": ["keyword.repeat", "keyword"] },
+  { "token_type": "skriptStructure", "style": ["keyword"] },
+  { "token_type": "skriptType", "style": ["type"] },
+  { "token_type": "skriptEventValue", "style": ["variable.builtin", "variable"] },
+
+  // ---- standard LSP token types --------------------------------------------
+  { "token_type": "function", "token_modifiers": ["defaultLibrary"], "style": ["function.builtin", "function"] },
+  { "token_type": "function", "style": ["function"] },
+  { "token_type": "parameter", "style": ["variable.parameter", "variable"] },
+  { "token_type": "variable", "token_modifiers": ["readonly"], "style": ["constant"] },
+  { "token_type": "variable", "token_modifiers": ["static"], "style": ["variable.special", "variable"] },
+  { "token_type": "variable", "style": ["variable"] },
+  { "token_type": "property", "style": ["property"] },
+  { "token_type": "type", "style": ["type"] },
+  { "token_type": "keyword", "style": ["keyword"] },
+  { "token_type": "number", "style": ["number"] },
+  { "token_type": "string", "style": ["string"] },
+  { "token_type": "operator", "style": ["operator"] },
+  { "token_type": "comment", "token_modifiers": ["documentation"], "style": ["comment.doc", "comment"] },
+  { "token_type": "comment", "style": ["comment"] },
+
+  // Deprecated syntax is struck through rather than recoloured, so it still
+  // reads as whatever it is while being visibly on the way out. `docs.json`
+  // carries a `deprecated` flag on every entry, which is where this comes from.
+  { "token_type": "skriptEffect", "token_modifiers": ["deprecated"], "strikethrough": true, "style": ["function", "keyword"] },
+  { "token_type": "skriptCondition", "token_modifiers": ["deprecated"], "strikethrough": true, "style": ["keyword.conditional", "keyword"] },
+  { "token_type": "skriptExpression", "token_modifiers": ["deprecated"], "strikethrough": true, "style": ["property", "variable"] }
+]

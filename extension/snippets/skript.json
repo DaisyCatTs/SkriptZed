@@ -1,0 +1,346 @@
+{
+  "Event": {
+    "prefix": "on",
+    "body": ["on ${1:join}:", "\t$0"],
+    "description": "Event handler"
+  },
+  "On join": {
+    "prefix": "onjoin",
+    "body": ["on join:", "\tsend \"${1:Welcome, %player%!}\" to player", "$0"],
+    "description": "Player join event"
+  },
+  "On first join": {
+    "prefix": "onfirstjoin",
+    "body": ["on first join:", "\t$0"],
+    "description": "First-ever join event"
+  },
+  "On quit": {
+    "prefix": "onquit",
+    "body": ["on quit:", "\t$0"],
+    "description": "Player quit event"
+  },
+  "On damage": {
+    "prefix": "ondamage",
+    "body": ["on damage:", "\t$0"],
+    "description": "Entity damage event"
+  },
+  "On death": {
+    "prefix": "ondeath",
+    "body": ["on death of ${1:player}:", "\t$0"],
+    "description": "Death event"
+  },
+  "On respawn": {
+    "prefix": "onrespawn",
+    "body": ["on respawn:", "\t$0"],
+    "description": "Respawn event"
+  },
+  "On break": {
+    "prefix": "onbreak",
+    "body": ["on break of ${1:stone}:", "\t$0"],
+    "description": "Block break event"
+  },
+  "On place": {
+    "prefix": "onplace",
+    "body": ["on place of ${1:stone}:", "\t$0"],
+    "description": "Block place event"
+  },
+  "On click": {
+    "prefix": "onclick",
+    "body": ["on ${1|right,left|} click${2: on ${3:chest}}:", "\t$0"],
+    "description": "Click event"
+  },
+  "On inventory click": {
+    "prefix": "oninvclick",
+    "body": ["on inventory click:", "\tcancel event", "\t$0"],
+    "description": "Inventory click event"
+  },
+  "On chat": {
+    "prefix": "onchat",
+    "body": ["on chat:", "\t$0"],
+    "description": "Chat event"
+  },
+  "On command": {
+    "prefix": "oncommand",
+    "body": ["on command \"${1:/help}\":", "\t$0"],
+    "description": "Command event"
+  },
+  "On script load": {
+    "prefix": "onload",
+    "body": ["on script load:", "\t$0"],
+    "description": "Runs once when the script loads"
+  },
+  "On script unload": {
+    "prefix": "onunload",
+    "body": ["on script unload:", "\t$0"],
+    "description": "Runs once when the script unloads"
+  },
+  "Event with priority": {
+    "prefix": "onpriority",
+    "body": [
+      "on ${1:damage} with priority ${2|lowest,low,normal,high,highest,monitor|}:",
+      "\t$0"
+    ],
+    "description": "Event handler with an explicit priority"
+  },
+  "Cancelled event": {
+    "prefix": "oncancelled",
+    "body": ["on cancelled ${1:damage}:", "\t$0"],
+    "description": "Only fires when the event was already cancelled"
+  },
+
+  "Command": {
+    "prefix": "command",
+    "body": [
+      "command /${1:name}:",
+      "\tdescription: ${2:Does something.}",
+      "\tpermission: ${3:skript.${1:name}}",
+      "\ttrigger:",
+      "\t\t$0"
+    ],
+    "description": "Command with a trigger"
+  },
+  "Command (full)": {
+    "prefix": "commandfull",
+    "body": [
+      "command /${1:name} <${2:text}>:",
+      "\tdescription: ${3:Does something.}",
+      "\tusage: /${1:name} <${2:text}>",
+      "\tpermission: ${4:skript.${1:name}}",
+      "\tpermission message: ${5:You do not have permission to do that.}",
+      "\taliases: /${6:alias}",
+      "\texecutable by: ${7|players,console,players and console|}",
+      "\tcooldown: ${8:5 seconds}",
+      "\tcooldown message: ${9:Please wait %remaining time%.}",
+      "\ttrigger:",
+      "\t\t$0"
+    ],
+    "description": "Command with every entry filled in"
+  },
+  "Trigger": {
+    "prefix": "trigger",
+    "body": ["trigger:", "\t$0"],
+    "description": "Command trigger section"
+  },
+
+  "Function": {
+    "prefix": "function",
+    "body": ["function ${1:name}(${2:arg: text}):", "\t$0"],
+    "description": "Function"
+  },
+  "Function with return": {
+    "prefix": "functionreturn",
+    "body": [
+      "function ${1:name}(${2:arg: text}) :: ${3:text}:",
+      "\treturn $0"
+    ],
+    "description": "Function with a return type"
+  },
+  "Local function": {
+    "prefix": "localfunction",
+    "body": ["local function ${1:name}(${2:arg: text}):", "\t$0"],
+    "description": "Function visible only to this script (Skript 2.7+)"
+  },
+
+  "Options": {
+    "prefix": "options",
+    "body": ["options:", "\t${1:key}: ${2:value}", "$0"],
+    "description": "Options block"
+  },
+  "Variables": {
+    "prefix": "variables",
+    "body": ["variables:", "\t{${1:name}} = ${2:0}", "$0"],
+    "description": "Default variable values"
+  },
+  "Aliases": {
+    "prefix": "aliases",
+    "body": ["aliases:", "\t${1:name} = ${2:iron ingot, gold ingot}", "$0"],
+    "description": "Custom item aliases"
+  },
+  "Using experiment": {
+    "prefix": "using",
+    "body": [
+      "using ${1|script reflection,for loops,queues,type hints,catch runtime errors,damage source,equippable components,examples|}",
+      "$0"
+    ],
+    "description": "Opt into an experimental feature"
+  },
+
+  "If": {
+    "prefix": "if",
+    "body": ["if ${1:condition}:", "\t$0"],
+    "description": "Conditional"
+  },
+  "If else": {
+    "prefix": "ifelse",
+    "body": ["if ${1:condition}:", "\t${2:# then}", "else:", "\t$0"],
+    "description": "Conditional with an else branch"
+  },
+  "Else if": {
+    "prefix": "elseif",
+    "body": ["else if ${1:condition}:", "\t$0"],
+    "description": "Else-if branch"
+  },
+  "Else": {
+    "prefix": "else",
+    "body": ["else:", "\t$0"],
+    "description": "Else branch"
+  },
+  "If all": {
+    "prefix": "ifall",
+    "body": ["if all:", "\t${1:condition one}", "\t${2:condition two}", "then:", "\t$0"],
+    "description": "Multiline conditional, all must hold (Skript 2.7+)"
+  },
+  "If any": {
+    "prefix": "ifany",
+    "body": ["if any:", "\t${1:condition one}", "\t${2:condition two}", "then:", "\t$0"],
+    "description": "Multiline conditional, at least one must hold (Skript 2.7+)"
+  },
+
+  "Loop": {
+    "prefix": "loop",
+    "body": ["loop ${1:all players}:", "\t$0"],
+    "description": "Loop over a list"
+  },
+  "Loop times": {
+    "prefix": "looptimes",
+    "body": ["loop ${1:10} times:", "\t$0"],
+    "description": "Loop a fixed number of times"
+  },
+  "For each": {
+    "prefix": "foreach",
+    "body": ["for each ${1:{_value}} in ${2:{_list::*}}:", "\t$0"],
+    "description": "For-each loop (experimental: `using for loops`)"
+  },
+  "For each key value": {
+    "prefix": "foreachkv",
+    "body": [
+      "for each ${1:{_key}}, ${2:{_value}} in ${3:{_list::*}}:",
+      "\t$0"
+    ],
+    "description": "For-each over keys and values (experimental)"
+  },
+  "While": {
+    "prefix": "while",
+    "body": ["while ${1:condition}:", "\t$0"],
+    "description": "While loop"
+  },
+  "Do while": {
+    "prefix": "dowhile",
+    "body": ["do while ${1:condition}:", "\t$0"],
+    "description": "Runs the body once before checking the condition"
+  },
+  "Every": {
+    "prefix": "every",
+    "body": ["every ${1:5 minutes}:", "\t$0"],
+    "description": "Periodic task"
+  },
+
+  "Send": {
+    "prefix": "send",
+    "body": ["send \"${1:message}\" to ${2:player}"],
+    "description": "Send a message"
+  },
+  "Send formatted": {
+    "prefix": "sendformatted",
+    "body": ["send formatted \"${1:message}\" to ${2:player}"],
+    "description": "Send a message with clickable/hoverable tags"
+  },
+  "Broadcast": {
+    "prefix": "broadcast",
+    "body": ["broadcast \"${1:message}\""],
+    "description": "Broadcast to everyone"
+  },
+  "Set": {
+    "prefix": "set",
+    "body": ["set {${1:variable}} to ${2:value}"],
+    "description": "Set a variable"
+  },
+  "Set local": {
+    "prefix": "setlocal",
+    "body": ["set {_${1:variable}} to ${2:value}"],
+    "description": "Set a local variable"
+  },
+  "Add": {
+    "prefix": "add",
+    "body": ["add ${1:1} to {${2:variable}}"],
+    "description": "Add to a variable or list"
+  },
+  "Remove": {
+    "prefix": "remove",
+    "body": ["remove ${1:1} from {${2:variable}}"],
+    "description": "Remove from a variable or list"
+  },
+  "Delete": {
+    "prefix": "delete",
+    "body": ["delete {${1:variable}}"],
+    "description": "Delete a variable"
+  },
+  "Wait": {
+    "prefix": "wait",
+    "body": ["wait ${1:1} ${2|tick,ticks,second,seconds,minute,minutes|}"],
+    "description": "Delay execution"
+  },
+  "Return": {
+    "prefix": "return",
+    "body": ["return ${1:value}"],
+    "description": "Return from a function"
+  },
+  "Stop": {
+    "prefix": "stop",
+    "body": ["stop"],
+    "description": "Stop the trigger"
+  },
+  "Cancel event": {
+    "prefix": "cancel",
+    "body": ["cancel event"],
+    "description": "Cancel the current event"
+  },
+  "Exit loop": {
+    "prefix": "exitloop",
+    "body": ["exit ${1:1} loop"],
+    "description": "Break out of a loop"
+  },
+  "Continue": {
+    "prefix": "continue",
+    "body": ["continue"],
+    "description": "Skip to the next loop iteration"
+  },
+  "Teleport": {
+    "prefix": "teleport",
+    "body": ["teleport ${1:player} to ${2:{_location}}"],
+    "description": "Teleport an entity"
+  },
+  "Give": {
+    "prefix": "give",
+    "body": ["give ${1:1} ${2:diamond} to ${3:player}"],
+    "description": "Give an item"
+  },
+  "Play sound": {
+    "prefix": "playsound",
+    "body": [
+      "play sound \"${1:entity.player.levelup}\" with volume ${2:1} and pitch ${3:1} to ${4:player}"
+    ],
+    "description": "Play a sound"
+  },
+  "Execute console command": {
+    "prefix": "console",
+    "body": ["execute console command \"${1:/say hi}\""],
+    "description": "Run a command as console"
+  },
+  "Chance": {
+    "prefix": "chance",
+    "body": ["chance of ${1:50}%:", "\t$0"],
+    "description": "Random chance section"
+  },
+
+  "Block comment": {
+    "prefix": "###",
+    "body": ["###", "$0", "###"],
+    "description": "Block comment (Skript 2.9+)"
+  },
+  "Not a section marker": {
+    "prefix": "#-#",
+    "body": ["#-#"],
+    "description": "Stops a trailing colon from opening a section"
+  }
+}

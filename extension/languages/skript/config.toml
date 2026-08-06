@@ -1,0 +1,61 @@
+name = "Skript"
+grammar = "skript"
+path_suffixes = ["sk"]
+line_comments = ["# "]
+
+# Skript's own scripts, its config.sk and every community style guide use tabs.
+tab_size = 4
+hard_tabs = true
+
+# `###` on a line of its own opens and closes a block comment (Skript 2.9+).
+block_comment = { start = "###", end = "###", prefix = "", tab_size = 1 }
+
+collapsed_placeholder = " … "
+
+# `loop-player`, `arg-1` and `event-block` are single words: double-clicking one
+# should select all of it, and completion should treat it as one query.
+word_characters = ["-", "_"]
+completion_query_characters = ["-", "_", "{", "}", "@", "%", ":", "."]
+
+autoclose_before = ",;:.%)]}>\"' \n\t"
+
+brackets = [
+    { start = "(", end = ")", close = true, newline = false, not_in = ["string", "comment"] },
+    { start = "[", end = "]", close = true, newline = false, not_in = ["string", "comment"] },
+    { start = "{", end = "}", close = true, newline = false, not_in = ["string", "comment"] },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+    # `%…%` brackets an interpolation inside a string, so unlike the pairs above
+    # it is wanted *within* a string and excluded outside one is not possible —
+    # closing it eagerly is still the right default because a lone `%` in Skript
+    # is almost always the start of an expression.
+    { start = "%", end = "%", close = true, newline = false, not_in = ["comment"] },
+]
+
+# ---------------------------------------------------------------- indentation
+#
+# Skript is indentation-delimited, so indentation is driven from regexes rather
+# than from indents.scm. Zed merges both sources in `Buffer::suggest_autoindents`
+# but discards tree-sitter suggestions that land inside an ERROR range while
+# keeping regex ones — and a Skript block is a parse error for exactly as long as
+# you are still typing its header. Zed's own YAML uses the same approach and
+# ships no indents.scm at all.
+
+auto_indent_using_last_non_empty_line = false
+auto_indent_on_paste = false
+
+# A line opens a section when its code ends in `:`, optionally followed by
+# whitespace and a comment — but NOT when that comment is Skript's `#-#` marker,
+# which explicitly says "this trailing colon does not open a section".
+#
+# Zed compiles these with the Rust `regex` crate, which has no lookaround, so
+# "a comment that does not begin with `#-#`" is spelled out as an alternation:
+# `#` followed by a non-dash, or by a dash and a non-hash, or by nothing.
+increase_indent_pattern = "^[^#]*:[ \\t]*(#([^-].*|-[^#].*|-?))?$"
+
+# `else` and `else if` align to the `if` that opened the chain rather than
+# merely losing one level. The `valid_after` names are matched against the
+# `@start.if` / `@start.else-if` captures in indents.scm.
+decrease_indent_patterns = [
+    { pattern = "^[ \\t]*else[ \\t]+if\\b", valid_after = ["if", "else-if"] },
+    { pattern = "^[ \\t]*else[ \\t]*:", valid_after = ["if", "else-if"] },
+]

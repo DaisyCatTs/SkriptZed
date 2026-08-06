@@ -213,6 +213,11 @@ impl LanguageServer for Backend {
                     for message in &loaded.messages {
                         client.log_message(MessageType::INFO, message).await;
                     }
+                    // A pop-up, not a log line: the log pane is not somewhere a
+                    // first-time user thinks to look when completion is empty.
+                    if let Some(warning) = &loaded.degraded {
+                        client.show_message(MessageType::WARNING, warning).await;
+                    }
                     let mut state = state.write().await;
                     state.catalog = Some(loaded.catalog);
                     state.uninstalled = loaded.uninstalled;
@@ -831,7 +836,7 @@ impl LanguageServer for Backend {
         );
 
         let line = document.line(position.line);
-        let prefix = &line[..(position.character as usize).min(line.len())];
+        let prefix = convert::line_prefix(line, position.character);
         let mut items = Vec::new();
 
         // Declared symbols always come first: they are the user's own code.
@@ -980,7 +985,7 @@ impl LanguageServer for Backend {
             state.encoding,
         );
         let line = document.line(position.line);
-        let prefix = &line[..(position.character as usize).min(line.len())];
+        let prefix = convert::line_prefix(line, position.character);
 
         let Some((name, argument)) = enclosing_call(prefix) else {
             return Ok(None);
@@ -1490,6 +1495,41 @@ struct Loaded {
     uninstalled: Option<Catalog>,
     detection: Detection,
     messages: Vec<String>,
+    /// Set when the syntax database could not be loaded and the tiny built-in
+    /// catalog took over. Carried separately from `messages` because this one
+    /// has to be *shown* to the user, not logged: the fallback has no events,
+    /// expressions or conditions at all, so hover and completion go quiet, and
+    /// a silent degradation reads exactly like a broken extension.
+    degraded: Option<String>,
+}
+
+/// Where the downloaded syntax databases are cached.
+///
+/// Deliberately not the temp directory. `std::env::temp_dir()` is `/tmp` on
+/// Linux unless `$TMPDIR` says otherwise, and `/tmp/skript-lsp` is a fixed,
+/// predictable name in a world-writable sticky directory: any other local user
+/// can create it first and leave a crafted `docs-latest.json` there, which the
+/// server would then load as the authoritative description of the language.
+/// `/tmp` is also swept by systemd-tmpfiles, which defeats the 24-hour cache TTL
+/// and re-downloads roughly 9 MB far more often than intended.
+///
+/// Falls back to the temp directory only when the platform's cache location
+/// cannot be determined, since a poor cache still beats refusing to start.
+fn cache_directory() -> std::path::PathBuf {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join("Library/Caches"))
+    } else {
+        std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".cache"))
+            })
+    };
+
+    base.unwrap_or_else(std::env::temp_dir).join("skript-lsp")
 }
 
 /// Detects the project's addons, then builds the catalog from every source.
@@ -1498,7 +1538,7 @@ struct Loaded {
 /// duplicate copies of core syntax lose the id-based dedup to the authoritative
 /// entries.
 fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded {
-    let cache_dir = std::env::temp_dir().join("skript-lsp");
+    let cache_dir = cache_directory();
     let mut messages = Vec::new();
 
     // ---- 1. what is installed ------------------------------------------
@@ -1522,20 +1562,21 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
     }
 
     // ---- 2. core Skript -------------------------------------------------
-    let (mut docs, mut fell_back) =
-        match skript_docs::source::load(&settings.docs_source(), &cache_dir) {
-            Ok(docs) => (docs, false),
-            Err(error) => {
-                messages.push(format!(
-                    "could not load the Skript syntax database ({error}); falling back to the \
-                 built-in catalog. Highlighting, outline, folding, go-to-definition and rename \
-                 still work; hover and completion will be limited."
-                ));
-                (skript_docs::fallback_docs(), true)
-            }
-        };
+    let (mut docs, degraded) = match skript_docs::source::load(&settings.docs_source(), &cache_dir)
+    {
+        Ok(docs) => (docs, None),
+        Err(error) => {
+            let warning = format!(
+                "Skript syntax database unavailable ({error}). Highlighting, indentation, \
+                 folding, outline, go-to-definition and rename all still work — but hover and \
+                 completion need the database and will be nearly empty until it downloads. \
+                 Check your connection and restart the language server."
+            );
+            (skript_docs::fallback_docs(), Some(warning))
+        }
+    };
 
-    if !fell_back {
+    if degraded.is_none() {
         messages.push(format!(
             "loaded Skript {} syntax: {} entries, {} patterns",
             docs.source.version,
@@ -1614,9 +1655,6 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
         }
     }
 
-    fell_back = false;
-    let _ = fell_back;
-
     docs.resolve_versions();
     let catalog = Catalog::build(docs).with_target_version(target_version);
 
@@ -1629,6 +1667,7 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
         uninstalled,
         detection,
         messages,
+        degraded,
     }
 }
 

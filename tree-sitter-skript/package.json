@@ -4,9 +4,9 @@
   "description": "Skript grammar for tree-sitter",
   "license": "MIT",
   "keywords": ["parser", "tree-sitter", "skript", "minecraft"],
-  "repository": "https://github.com/DaisyCatTs/tree-sitter-skript",
+  "repository": "https://github.com/DaisyCatTs/SkriptZed",
   "main": "bindings/node",
-  "files": ["grammar.js", "tree-sitter.json", "queries/*", "src/**"],
+  "files": ["grammar.js", "tree-sitter.json", "src/**"],
   "scripts": {
     "generate": "tree-sitter generate",
     "test": "tree-sitter test",

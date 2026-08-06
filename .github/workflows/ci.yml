@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main, master]
+    # Without this the `release` job is unreachable: it is gated on
+    # `refs/tags/v`, but a tag push matched no trigger at all, so the whole
+    # workflow never started for one. That is why v0.1.0 could be tagged and
+    # still leave the repository with zero release assets.
+    tags: ['v*']
   pull_request:
+  # So a release can be re-cut without moving the tag.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

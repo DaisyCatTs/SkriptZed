@@ -126,6 +126,19 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
         if indent_len == 0 || line.trim().is_empty() {
             continue;
         }
+        // A comment line's indentation is not the script's indentation. Skript
+        // strips comments before it looks at layout at all, so aligning one
+        // with spaces in an otherwise tab-indented file is legal — and common,
+        // because editors and pasted snippets do it constantly. Letting such a
+        // line set the unit made the *code* below it report
+        // "uses tabs here but spaces earlier in the file", which is both wrong
+        // and impossible to act on: the line it points at is correct.
+        //
+        // `###` prose is already skipped above for the same reason; ordinary
+        // `#` lines were missed.
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
         let indent = &line[..indent_len];
         let range = Range::new(
             Position::new(number as u32, 0),
@@ -247,6 +260,18 @@ fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) 
     }
 }
 
+/// Whether a call is a skript-reflect constructor rather than a Skript call.
+///
+/// skript-reflect writes `new ArrayList()`, which the index reads as a call to
+/// a function named `ArrayList`. Nothing will ever declare that function, so
+/// flagging it produces an error the user cannot fix and must ignore — the
+/// worst kind.
+fn preceded_by_new(document: &Document, reference: &skript_index::Reference) -> bool {
+    let line = document.line(reference.range.start.line);
+    let before = &line[..(reference.range.start.character as usize).min(line.len())];
+    before.trim_end().ends_with("new")
+}
+
 fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut Vec<Diagnostic>) {
     // Gathered once. Calling `Workspace::definitions` per reference walked every
     // indexed document and rebuilt its whole symbol tree each time, so a file
@@ -268,6 +293,17 @@ fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut
 
     for reference in &document.symbols().references {
         if reference.kind != SymbolKind::Function {
+            continue;
+        }
+        // `new ArrayList()` is skript-reflect constructing a Java object, not a
+        // call to a Skript function — and no Skript function will ever be
+        // declared for it, so the diagnostic can never be acted on. Reported
+        // from real use: a script full of legitimate skript-reflect lit up red.
+        //
+        // Matched on the text before the name rather than on the name's shape,
+        // because `new` is the only thing that distinguishes a constructor;
+        // capitalisation is a convention Skript does not enforce.
+        if preceded_by_new(document, reference) {
             continue;
         }
         if !declared.contains(reference.name.as_str()) {
@@ -493,6 +529,38 @@ mod tests {
         assert!(found.contains(&"indent-not-a-multiple"));
     }
 
+    /// Reported from real use: an otherwise tab-indented script showed
+    /// "uses tabs here but spaces earlier in the file" on correct lines,
+    /// because a comment above them happened to be aligned with spaces.
+    /// Skript strips comments before it looks at layout, so their indentation
+    /// is not the script's.
+    #[test]
+    fn a_comment_indented_differently_is_not_an_error() {
+        let found = codes(
+            "on join:
+    # aligned with spaces
+	send \"hi\"
+",
+        );
+        assert!(
+            !found.contains(&"inconsistent-indentation"),
+            "a comment must not set the file's indent unit, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn real_mixing_is_still_reported_around_a_comment() {
+        // The comment is skipped, but the two *code* lines still disagree.
+        let found = codes(
+            "on join:
+    send \"a\"
+	# note
+	send \"b\"
+",
+        );
+        assert!(found.contains(&"inconsistent-indentation"));
+    }
+
     #[test]
     fn reports_an_unclosed_block_comment() {
         assert!(codes("###\nnever closed\n").contains(&"unclosed-block-comment"));
@@ -521,6 +589,21 @@ mod tests {
         // link goes back to the first, which is the one the user has to look at.
         assert_eq!(duplicate.range.start.line, 3);
         assert_eq!(related.range.start.line, 0);
+    }
+
+    /// Reported from real use: a script full of legitimate skript-reflect
+    /// showed an unfixable error on every Java constructor.
+    #[test]
+    fn a_java_constructor_is_not_a_missing_skript_function() {
+        let found = codes(
+            "on join:
+	set {_list} to new ArrayList()
+",
+        );
+        assert!(
+            !found.contains(&"unknown-function"),
+            "`new X()` is skript-reflect, not a Skript call, got {found:?}"
+        );
     }
 
     #[test]

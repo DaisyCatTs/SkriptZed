@@ -39,7 +39,29 @@ pub struct Catalog {
     unparsable_patterns: usize,
     /// The Skript version the user targets, when known.
     target_version: Option<crate::version::Version>,
+    /// Memo for [`Catalog::classify_line`].
+    ///
+    /// Matching a line against the index costs roughly 200 µs, and the same
+    /// lines are classified twice per edit — once for diagnostics, once for
+    /// semantic tokens — so a 800-line file cost ~145 ms *per consumer*.
+    /// `classify_line` is pure, so the answer can simply be remembered.
+    ///
+    /// Skript is repetitive enough that the hit rate is high even within a
+    /// single pass: `stop`, `cancel event` and `return` recur constantly.
+    cache: std::sync::RwLock<ClassificationCache>,
 }
+
+/// What [`Catalog::classify_line`] has already worked out, keyed by the line
+/// text and the role it was asked about.
+type ClassificationCache = HashMap<(String, LineRole), Option<(EntryId, Match)>>;
+
+/// Upper bound on remembered lines.
+///
+/// Generous — a very large project is tens of thousands of distinct lines — but
+/// finite, so a long-running server cannot grow without limit. On overflow the
+/// cache is cleared rather than evicted one by one: classification is cheap
+/// enough that a rebuild costs less than tracking recency.
+const CACHE_LIMIT: usize = 50_000;
 
 impl Catalog {
     pub fn build(docs: Docs) -> Self {
@@ -78,6 +100,7 @@ impl Catalog {
             by_name,
             unparsable_patterns,
             target_version: None,
+            cache: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -130,6 +153,23 @@ impl Catalog {
     pub fn classify_line(&self, line: &str, role: LineRole) -> Option<(EntryId, Match)> {
         let code = line.trim_end().trim_end_matches(':').trim_end();
 
+        let key = (code.to_string(), role);
+        if let Ok(cache) = self.cache.read() {
+            if let Some(hit) = cache.get(&key) {
+                return hit.clone();
+            }
+        }
+        let answer = self.classify_line_uncached(code, role);
+        if let Ok(mut cache) = self.cache.write() {
+            if cache.len() >= CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, answer.clone());
+        }
+        answer
+    }
+
+    fn classify_line_uncached(&self, code: &str, role: LineRole) -> Option<(EntryId, Match)> {
         // Skript's event structure wraps every event pattern in
         // `[on] [cancelled|…] <.+> [with priority …]` before matching, so a
         // registered event's own pattern never contains the `on`. Without
@@ -265,7 +305,7 @@ impl Catalog {
 /// answer, because hover and semantic colour then assert something false.
 ///
 /// Ruling categories out by position is what keeps classification honest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LineRole {
     /// Column 0. Opens a structure: an event, a command, a function.
     TopLevel,

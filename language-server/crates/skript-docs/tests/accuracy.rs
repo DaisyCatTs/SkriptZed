@@ -360,3 +360,49 @@ fn classification_accuracy_against_skripts_own_examples() {
         unmatched.len()
     );
 }
+
+/// The cache must not change any answer.
+///
+/// `classify_line` memoises, so a wrong cache would be invisible in normal use
+/// and catastrophic in effect. This asks the same lines twice and compares.
+#[test]
+fn caching_does_not_change_the_answer() {
+    let Some(catalog) = catalog() else { return };
+    let (cases, _, _) = collect(&catalog);
+
+    for case in cases.iter().take(400) {
+        let first = catalog
+            .classify_line(&case.code, case.role)
+            .map(|(id, _)| id);
+        let second = catalog
+            .classify_line(&case.code, case.role)
+            .map(|(id, _)| id);
+        assert_eq!(
+            first, second,
+            "{:?} classified differently on the second ask",
+            case.code
+        );
+    }
+}
+
+/// Two roles for the same text are different questions.
+///
+/// The cache key includes the role; if it did not, whichever was asked first
+/// would answer for both — `command /home` is a Structure at the top level and
+/// something else entirely inside a trigger.
+#[test]
+fn the_cache_key_distinguishes_roles() {
+    let Some(catalog) = catalog() else { return };
+
+    let top = catalog
+        .classify_line("command /home", LineRole::TopLevel)
+        .map(|(id, _)| id.category);
+    let statement = catalog
+        .classify_line("command /home", LineRole::Statement)
+        .map(|(id, _)| id.category);
+
+    assert_ne!(
+        top, statement,
+        "the same text answered identically for both roles"
+    );
+}

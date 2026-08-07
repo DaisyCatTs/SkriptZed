@@ -1,12 +1,38 @@
 ###
 This file exists to be looked at, not run.
 
-It exercises every construct the extension claims to handle, so that opening it
-in Zed is a one-glance check that highlighting, indentation, folding and the
-outline all behave. Each section notes what it is testing.
+It has two jobs. It exercises every construct the extension claims to handle,
+so opening it is a one-glance check that highlighting, indentation, folding and
+the outline all behave. And it is a guided tour: the comments say what to try
+where, so you can see each language-server feature working on real code.
+
+  Hover              anything in a statement — `teleport`, `loop-player`,
+                     `uuid of player` — for its description, syntax and
+                     examples, straight from Skript's own database.
+  Go to definition   F12 on `greet(...)` on line 96, or on `{@prefix}`.
+                     It reaches `library.sk`, which you have not opened.
+  Find references    on `greet` — every call across the project.
+  Rename             F2 on `{_name}` inside a function. The signature is
+                     renamed too, and a `{_name}` in a different trigger is
+                     left alone, because Skript scopes it per trigger.
+  Completion         start typing `send`, `teleport` or `loop` on a new
+                     indented line. The pattern shows beside the name.
+  Signature help     type `greet(` and it shows the parameters.
+  Inlay hints        the call on line 96 shows parameter names inline.
+  Outline            ⌘⇧O / Ctrl+Shift+O — commands nest their entries.
+  Format             format the document; it re-indents from the parse tree
+                     and refuses to touch a file that does not parse.
+  Diagnostics        add a second `function greet(...)` and the error links
+                     back to the first one.
+
+If statements look uncoloured, `semantic_tokens` is still "off" — see step 2
+of the README. That setting is what turns on classification.
 ###
 
 # ---------------------------------------------------------------- structures
+#
+# The eight headers with a fixed shape. Every one of these folds, appears in
+# the outline, and is understood by the grammar rather than by the server.
 
 options:
 	prefix: &6[Server]&r
@@ -23,6 +49,7 @@ aliases:
 # ----------------------------------------------------------------- functions
 
 # All three return markers are valid Skript. All three should highlight.
+# Hover the parameter types; rename `{_name}` and watch the signature follow.
 function greet(name: text) :: text:
 	return "Hello, %{_name}%!"
 
@@ -32,11 +59,15 @@ function add_points(who: player, amount: number = 1) -> number:
 
 local function internal_helper() returns boolean:
 	# `local` means this is invisible to other scripts — go-to-definition from
-	# another file must NOT find it.
+	# another file must NOT find it, and neither must rename.
 	return true
 
 
 # ------------------------------------------------------------------ commands
+#
+# Fold this and the whole command collapses to one line. In the outline the
+# entries nest underneath it. Every entry value below is highlighted as text,
+# because that is what Skript treats it as.
 
 command /home <text> [<text>]:
 	description: Set, delete or travel to your home.
@@ -60,10 +91,25 @@ command /home <text> [<text>]:
 
 on join:
 	add 1 to {stats::joins}
+	# F12 here reaches greet() above; the call also carries an inlay hint.
 	send greet(player's name) to player
+	# And this one is declared in library.sk, which is not open.
+	send shared_helper(player's name) to player
 
 on first join:
 	broadcast "{@prefix} &e%player% joined for the first time!"
+
+# Skript accepts a separator as space, hyphen or nothing, so all three of these
+# are the same event. Hover each: every one resolves to On Click, not to the
+# generic catch-all.
+on right click:
+	stop
+
+on left-click on a sign:
+	stop
+
+on rightclick with a stick:
+	stop
 
 # The modifier follows `on`, and the priority follows the event name.
 on cancelled damage with priority high:
@@ -94,7 +140,8 @@ on chat:
 	# Legacy `&6` codes, `<tag>` formats, hex colours, and `%interpolation%`.
 	send "&6gold <red><bold>red bold<reset> <#FF00AA>hex %player%"
 	# A `#` inside a string is literal — this whole line is one string, not a
-	# comment, and a `:` inside it does not open a section.
+	# comment, and a `:` inside it does not open a section. This is the single
+	# most common thing other editors get wrong.
 	send "Item #1 costs 5# and the ratio is 3:1"
 	# Doubled quotes and doubled percent signs are the escapes.
 	send "he said ""hi"" and took 50%% of it"
@@ -106,7 +153,8 @@ on chat:
 
 on sneak toggle:
 	# Without the marker, a trailing colon would open a section. With it, this
-	# stays an ordinary statement and the next line does NOT indent.
+	# stays an ordinary statement and the next line does NOT indent. Press
+	# Enter at the end of this line to see it.
 	send "ratio 3:" to player #-#
 	send "still in the same block"
 

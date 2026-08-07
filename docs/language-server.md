@@ -18,7 +18,10 @@ single static binary per platform.
 | `textDocument/formatting` | Re-indents from the parse tree; refuses to touch a file that does not parse |
 | `textDocument/signatureHelp` | Parameter hints inside a function call |
 | `textDocument/inlayHint` | Parameter names at call sites, read from the declaration |
-| `textDocument/documentHighlight` | Every occurrence of the symbol under the cursor |
+| `textDocument/documentHighlight` | Every occurrence of the symbol under the cursor, scoped to its trigger |
+| `textDocument/codeAction` | Quick fixes for unknown functions, indentation and unclosed block comments |
+| `workspace/didChangeWatchedFiles` | Re-indexes when scripts change on disk, so a `git pull` does not leave phantom errors |
+| `workspace/didChangeConfiguration` | Applies settings without a restart |
 | `textDocument/semanticTokens/full` | Effects, conditions, expressions, events |
 | `textDocument/publishDiagnostics` | See below |
 

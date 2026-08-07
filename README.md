@@ -100,8 +100,9 @@ Not published to the registry yet? See
 | **Completion** | Context-aware: only events after `on `, only conditions inside `if `, only expressions inside `%…%`. Inserts as snippets with a tab stop per slot |
 | **Signature help** | Parameters as you type a function call |
 | **Inlay hints** | Parameter names shown at call sites, so `giveKit(p, 3)` is readable |
-| **Occurrence highlighting** | Every use of the symbol under your cursor |
+| **Occurrence highlighting** | Every use of the symbol under your cursor, within the trigger that owns it |
 | **Diagnostics** | Indentation Skript would reject, unclosed `###` blocks, duplicate declarations, calls to functions that do not exist, deprecated syntax |
+| **Quick fixes** | Correct a mistyped function name, create a missing one, fix the file's indentation, close an unterminated `###` block |
 | **Formatting** | Re-indents from the parse tree, and refuses to touch a file that does not parse |
 | **Snippets** | 61, covering every structure, event, loop and common effect |
 

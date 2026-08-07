@@ -13,6 +13,40 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+### Added
+
+- Quick fixes: correct a mistyped function name, create a missing one, fix the
+  file's indentation, close an unterminated `###` block.
+- The project re-indexes when scripts change on disk, so pulling a teammate's
+  new script no longer leaves permanent "no function named …" errors on correct
+  code.
+- Settings apply without restarting the language server, including the
+  `lsp.skript-lsp.settings` location that was previously read by nothing.
+- Deprecated syntax is tagged as such, so it strikes through in any theme.
+
+### Fixed
+
+- **Completion could not find most syntax by the word you type.** The list
+  matched on Skript's documentation *title* while you type the *pattern*, so
+  `send` never surfaced the effect filed under "Message". Effects reachable by
+  their own keyword went from 58% to 100%, conditions from 33% to 100%.
+- **Renaming a function parameter silently broke the function.** The body was
+  rewritten and the signature left behind, producing something that still ran
+  and did nothing. Go-to-definition on a parameter now works too; it previously
+  returned nothing at all.
+- **Renaming a local variable rewrote every trigger in the file.** Skript scopes
+  `{_x}` to the running trigger; renaming `{_i}` onto a name a sibling trigger
+  already used silently merged two unrelated variables.
+- `if`, `else if` and `while` hid the condition they introduce, so hovering
+  `if plugin "Vault" is enabled:` described the generic conditional section
+  rather than the condition.
+- Variables are no longer italicised in themes that style `variable.member`.
+
+### Performance
+
+- Classifying a line is remembered, so an edit costs only the lines that
+  changed. An 800-line script went from ~145 ms per pass to ~1 ms.
+
 ## [0.1.0] — 2026-08-07
 
 First release. Zed had no Skript support of any kind before this, so everything

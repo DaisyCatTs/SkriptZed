@@ -17,11 +17,15 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ### Added
 
-- **Call hierarchy.** Right-click a function and ask who calls it, or what it
-  calls. Events and commands appear as callers alongside other functions,
-  because in Skript they are the places a function actually runs from. Two
-  calls in one trigger collapse into one entry rather than repeating it, and a
-  `local function`'s callers are confined to its own file.
+- **Call hierarchy**, in the language server. Events and commands appear as
+  callers alongside other functions, because in Skript they are the places a
+  function actually runs from. Two calls in one trigger collapse into one entry,
+  and a `local function`'s callers stay in its own file.
+
+  **Zed cannot show this yet** — it does not implement the call hierarchy
+  requests, so there is no menu item for it. This is listed because the server
+  answers it for any client that does ask, and so that it is not mistaken for
+  a missing feature when Zed adds support.
 - **A duplicate declaration now links to the first one.** The diagnostic on the
   second `function payout()` points back at the first, so the fix is one click
   rather than a search.

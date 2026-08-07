@@ -105,7 +105,6 @@ Not published to the registry yet? See
 | **Indentation** | Auto-indent after any `:` line, `else` snapping back to its `if`, and Skript's `#-#` marker for a colon that does *not* open a section |
 | **Folding & outline** | Every event, command, function and section, with commands showing their entries nested underneath |
 | **Navigation** | Go to definition, find references and rename — project-wide, including files you have not opened, respecting `local function` and file-scoped `{_variables}` |
-| **Call hierarchy** | Who calls this function, and what it calls. Events and commands count as callers, because that is where a function actually runs from |
 | **Hover** | Description, syntax, examples, event values, `since`, deprecation and addon requirements, from Skript's own database |
 | **Completion** | Context-aware: only events after `on `, only conditions inside `if `, only expressions inside `%…%`. Inserts as snippets with a tab stop per slot |
 | **Signature help** | Parameters as you type a function call |

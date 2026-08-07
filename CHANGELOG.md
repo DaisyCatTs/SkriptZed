@@ -13,6 +13,28 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-08-07
+
+### Fixed
+
+- **Skript's own functions are no longer reported as missing** ([#3]). `floor`,
+  `abs`, `mod`, `uuid` and the other 41 built-ins are registered at runtime and
+  declared in no script, so calling one was an error. Functions registered by
+  addons are covered by the same fix.
+- **Indentation is judged per structure, not per file** ([#2]). Skript infers
+  the indent unit for each top-level structure separately — 7 of the 540 scripts
+  Skript itself ships switch between tabs and spaces between structures. Mixing
+  *inside* one structure is still reported.
+- **A comment no longer decides the file's indentation.** One comment aligned
+  with spaces in a tab-indented script made every correct line below it an
+  error.
+- **skript-reflect constructors are not missing functions.** `new ArrayList()`
+  was read as a call to a Skript function named `ArrayList`, which nothing could
+  ever declare.
+
+[#2]: https://github.com/DaisyCatTs/SkriptZed/issues/2
+[#3]: https://github.com/DaisyCatTs/SkriptZed/issues/3
+
 ## [0.2.3] — 2026-08-07
 
 ### Fixed

@@ -379,3 +379,35 @@ fn loading_only_detected_addons_stays_small() {
     let names: Vec<String> = catalog.docs.addons().into_iter().map(|a| a.name).collect();
     assert_eq!(names.len(), 2, "loaded {names:?}");
 }
+
+/// Skript writes an optional separator as its own group — `[( |-)]` — so
+/// `right click`, `right-click` and `rightclick` are all the same event. Fusing
+/// that group *nested inside another optional* used to trim the spelled form's
+/// trailing space, which then deduped against the no-separator form and deleted
+/// the spaced spelling outright. `on right click` — one of the most-used lines
+/// in Skript — fell through to the catch-all `<.+>` event structure instead.
+///
+/// The catch-all is why this cannot be tested by asking "did it classify?": at
+/// the top level everything classifies. It has to assert the entry by name.
+#[test]
+fn a_separator_group_keeps_its_spaced_spelling() {
+    let Some(docs) = skript_docs() else {
+        return;
+    };
+    let catalog = skript_docs::Catalog::build(docs);
+
+    for line in [
+        "on right click",
+        "on left click",
+        "on right-click",
+        "on rightclick",
+        "on left click on a sign",
+    ] {
+        let entry = catalog
+            .classify_line(line, skript_docs::LineRole::TopLevel)
+            .and_then(|(id, _)| catalog.entry(id))
+            .map(|entry| entry.name.clone())
+            .unwrap_or_else(|| "<unclassified>".into());
+        assert_eq!(entry, "On Click", "`{line}` should be the click event");
+    }
+}

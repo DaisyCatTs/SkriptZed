@@ -272,9 +272,15 @@ fn spell_out(run: &[Node]) -> Option<Node> {
     // An all-optional run can vanish entirely; that empty form is the `Optional`
     // wrapper, not a branch that matches an empty token.
     let optional = forms.iter().any(|form| form.trim().is_empty());
+    // `collapse_in_group`, not `collapse`, because this node may itself end up
+    // inside a wider glued run. Trimming here loses the separator: the run
+    // `mouse` + `[( |-)]` spells `"mouse "`, `"mouse-"` and `"mouse"`, and
+    // plain `collapse` turned the first into the third — so by the time
+    // `click` was appended, only `mouseclick` and `mouse-click` survived and
+    // `mouse click` could not be written at all. Same for `right click`.
     let mut spelled: Vec<String> = forms
         .iter()
-        .map(|form| collapse(form))
+        .map(|form| collapse_in_group(form))
         .filter(|form| !form.is_empty())
         .collect();
     spelled.sort();

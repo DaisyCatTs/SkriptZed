@@ -190,6 +190,17 @@ jobs:
       - run: cargo build --release -p skript-lsp --target ${{ matrix.target }}
         working-directory: language-server
 
+      # The server falls back to fetching these over the network when they are
+      # not on disk, which is fine for a user and useless in CI: the smoke test
+      # then passes or fails on whether the download beat it, which is how the
+      # first run of this step failed on Linux and macOS while passing on
+      # Windows. Fetch them first, exactly as the gate jobs do.
+      - name: Fetch the syntax databases
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-apple-darwin'
+        run: |
+          node scripts/fetch-docs.mjs
+          node scripts/fetch-addons.mjs
+
       # The gate jobs test a binary built for the runner. This tests the one
       # about to be published — a different profile, a different target triple,
       # and the only artefact any user ever runs. Skipped for the two targets

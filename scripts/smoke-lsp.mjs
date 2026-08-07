@@ -17,15 +17,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const exe = process.platform === 'win32' ? 'skript-lsp.exe' : 'skript-lsp';
+// SKRIPT_LSP_BINARY points this at a binary that is not a local build — the
+// downloaded release asset, most usefully. A local `cargo build` passing proves
+// nothing about the artifact a user actually receives, and v0.1.0 shipped
+// several times before that gap was noticed.
 const binary = [
+  process.env.SKRIPT_LSP_BINARY,
   join(root, 'language-server', 'target', 'release', exe),
   join(root, 'language-server', 'target', 'debug', exe),
-].find(existsSync);
+].find(candidate => candidate && existsSync(candidate));
 
 if (!binary) {
   console.error('skript-lsp not built — run: cd language-server && cargo build -p skript-lsp');
   process.exit(2);
 }
+
+console.log(`  binary: ${binary}\n`);
 
 // ---------------------------------------------------------------- fixtures
 //

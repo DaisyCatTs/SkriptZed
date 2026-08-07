@@ -972,33 +972,42 @@ impl LanguageServer for Backend {
             params.text_document_position.position,
         );
         let typed_fragment = &prefix[fragment_start(prefix).min(prefix.len())..];
-        let mut items = Vec::new();
+        // Scored, so the server decides relevance rather than leaving the client
+        // to order 800-odd items by name.
+        let mut items: Vec<(i32, CompletionItem)> = Vec::new();
 
         // Inside a command, the useful suggestions are its entries — not the
         // 1,200 effects that cannot legally appear there. Offering those was
         // the single most misleading thing completion did.
         if in_command_entry_position(document, position.line) && !prefix.contains(':') {
             for entry in entries::COMMAND {
-                items.push(CompletionItem {
-                    label: format!("{}:", entry.key),
-                    kind: Some(CompletionItemKind::PROPERTY),
-                    detail: Some("command entry".into()),
-                    documentation: Some(Documentation::MarkupContent(markdown(entries::hover(
-                        entry,
-                    )))),
-                    insert_text: Some(match entry.key {
-                        // The only entry that opens a section.
-                        "trigger" => "trigger:
+                let score = relevance(entry.key, typed_fragment);
+                items.push((
+                    score,
+                    CompletionItem {
+                        label: format!("{}:", entry.key),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some("command entry".into()),
+                        documentation: Some(Documentation::MarkupContent(markdown(
+                            entries::hover(entry),
+                        ))),
+                        insert_text: Some(match entry.key {
+                            // The only entry that opens a section.
+                            "trigger" => "trigger:
 	$0"
-                        .to_string(),
-                        key => format!("{key}: $0"),
-                    }),
-                    insert_text_format: Some(InsertTextFormat::SNIPPET),
-                    sort_text: Some(format!("0{}", entry.key)),
-                    ..Default::default()
-                });
+                            .to_string(),
+                            key => format!("{key}: $0"),
+                        }),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        sort_text: Some(sort_key(score, entry.key)),
+                        ..Default::default()
+                    },
+                ));
             }
-            return Ok(Some(CompletionResponse::Array(items)));
+            items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
+            return Ok(Some(CompletionResponse::Array(
+                items.into_iter().map(|(_, item)| item).collect(),
+            )));
         }
 
         // Declared symbols always come first: they are the user's own code.
@@ -1022,12 +1031,19 @@ impl LanguageServer for Backend {
             if !seen.insert((symbol.kind, symbol.name.clone())) {
                 continue;
             }
-            items.push(CompletionItem {
-                label: symbol.name.clone(),
-                kind: Some(kind),
-                detail: (!symbol.detail.is_empty()).then(|| symbol.detail.clone()),
-                ..Default::default()
-            });
+            // The user's own declarations outrank anything from the catalog:
+            // they are far fewer, and far more likely to be what was meant.
+            let score = relevance(&symbol.name, typed_fragment) + 400;
+            items.push((
+                score,
+                CompletionItem {
+                    label: symbol.name.clone(),
+                    kind: Some(kind),
+                    detail: (!symbol.detail.is_empty()).then(|| symbol.detail.clone()),
+                    sort_text: Some(sort_key(score, &symbol.name)),
+                    ..Default::default()
+                },
+            ));
         }
 
         if let Some(catalog) = &state.catalog {
@@ -1063,40 +1079,85 @@ impl LanguageServer for Backend {
                         (Some(_), false) => 1,
                     };
 
-                    items.push(CompletionItem {
-                        label: entry.name.clone(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some(detail),
-                        // The label is the documentation *title*; the user types
-                        // the *pattern*. Zed filters on the label alone, so
-                        // without this, typing `send` never surfaces the effect
-                        // filed under "Message" — and 60 of 139 effects are
-                        // unreachable by the very keyword they begin with.
-                        // Matching on both is the whole point of completion in a
-                        // language you write as prose.
-                        filter_text: Some(filter_text_for(&entry.name, pattern)),
-                        sort_text: Some(format!("{rank}{}", entry.name)),
-                        // Rendering every entry's Markdown card here meant
-                        // thousands of documents rebuilt on each keystroke —
-                        // and " " is a completion trigger, so that was every
-                        // space typed. The client asks for the one item it
-                        // actually shows via `completionItem/resolve`.
-                        data: Some(serde_json::json!([category.label(), id.index])),
-                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range: replace,
-                            new_text: snippet_for_typed(pattern, typed_fragment),
-                        })),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                        tags: entry
-                            .is_deprecated()
-                            .then(|| vec![CompletionItemTag::DEPRECATED]),
-                        ..Default::default()
-                    });
+                    let filter = filter_text_for(&entry.name, pattern);
+                    // Scored against the name and the pattern's *opening*
+                    // keywords separately, taking the best.
+                    //
+                    // Skript writes `(message|send …)`, so `send` is a leading
+                    // keyword of the Message effect — but in the flattened
+                    // filter text it lands third, and the positional penalty
+                    // dropped Message below every entry merely *named* "Send
+                    // …". Typing the keyword should find the syntax that
+                    // starts with it.
+                    // Typing a syntax's exact name should surface that syntax,
+                    // not one that merely contains the word: `teleport` and
+                    // `Display Teleport Duration` otherwise tie at a whole-word
+                    // match and the alphabet decides.
+                    let named_exactly = entry.name.eq_ignore_ascii_case(typed_fragment.trim());
+                    let score = relevance(&filter, typed_fragment)
+                        .max(relevance_to_keywords(pattern, typed_fragment))
+                        + if named_exactly { 250 } else { 0 }
+                        - rank * 60;
+                    items.push((
+                        score,
+                        CompletionItem {
+                            label: entry.name.clone(),
+                            kind: Some(CompletionItemKind::SNIPPET),
+                            detail: Some(detail),
+                            // The label is the documentation *title*; the user types
+                            // the *pattern*. Zed filters on the label alone, so
+                            // without this, typing `send` never surfaces the effect
+                            // filed under "Message" — and 60 of 139 effects are
+                            // unreachable by the very keyword they begin with.
+                            // Matching on both is the whole point of completion in a
+                            // language you write as prose.
+                            filter_text: Some(filter),
+                            sort_text: Some(sort_key(score, &entry.name)),
+                            // Rendering every entry's Markdown card here meant
+                            // thousands of documents rebuilt on each keystroke —
+                            // and " " is a completion trigger, so that was every
+                            // space typed. The client asks for the one item it
+                            // actually shows via `completionItem/resolve`.
+                            data: Some(serde_json::json!([category.label(), id.index])),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                                range: replace,
+                                new_text: snippet_for_typed(pattern, typed_fragment),
+                            })),
+                            insert_text_format: Some(InsertTextFormat::SNIPPET),
+                            tags: entry
+                                .is_deprecated()
+                                .then(|| vec![CompletionItemTag::DEPRECATED]),
+                            ..Default::default()
+                        },
+                    ));
                 }
             }
         }
 
-        Ok(Some(CompletionResponse::Array(items)))
+        // Anything that does not match at all is dropped once the user has
+        // typed something — a list containing every effect is not a list.
+        let narrowing = !typed_fragment.trim().is_empty();
+        if narrowing {
+            items.retain(|(score, _)| *score > 0);
+        }
+        items.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
+
+        // Capped, and the client is told the list is partial so it asks again
+        // as the query narrows. Without a cap this is ~190 KiB per keystroke
+        // today, and several times that once a plugins directory merges addon
+        // syntax.
+        let limit = if narrowing {
+            COMPLETION_LIMIT
+        } else {
+            COMPLETION_BROWSE_LIMIT
+        };
+        let truncated = items.len() > limit;
+        items.truncate(limit);
+
+        Ok(Some(CompletionResponse::List(CompletionList {
+            is_incomplete: truncated,
+            items: items.into_iter().map(|(_, item)| item).collect(),
+        })))
     }
 
     /// Quick fixes for the diagnostics the client hands back.
@@ -1880,6 +1941,150 @@ fn expand(pattern: &str, typed: &str, stop: &mut usize, out: &mut String) {
     }
 }
 
+/// Most items returned when the user has typed something to narrow by.
+///
+/// Small, because this is the per-keystroke path and relevance has already put
+/// the useful items first.
+const COMPLETION_LIMIT: usize = 200;
+
+/// Most items returned when nothing has been typed.
+///
+/// Deliberately far larger. An empty query is somebody pressing Ctrl-Space to
+/// *browse*, which happens once rather than per keystroke — and every item ties
+/// on relevance, so a small cap would truncate alphabetically and silently hide
+/// whole addons behind the letter it happened to stop at.
+const COMPLETION_BROWSE_LIMIT: usize = 2_000;
+
+/// How well `text` answers what the user has typed.
+///
+/// Higher is better; zero means no match at all. The shape matters more than the
+/// exact numbers: a word *starting* with the query beats one merely containing
+/// it, and the first word — the keyword you actually type — beats a later one.
+/// Without this the client sees 800-odd items ordered by name and the useful one
+/// is wherever the alphabet put it.
+fn relevance(text: &str, typed: &str) -> i32 {
+    let query = typed
+        .split_whitespace()
+        .next_back()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if query.is_empty() {
+        return 1;
+    }
+
+    let text = text.to_ascii_lowercase();
+    let mut best = 0;
+
+    for (index, word) in text.split_whitespace().enumerate() {
+        let score = if word == query {
+            1000
+        } else if word.starts_with(&query) {
+            800
+        } else if word.contains(&query) {
+            300
+        } else {
+            continue;
+        };
+        // The leading word is the one being typed; a match deeper in the
+        // pattern is real but weaker.
+        best = best.max(score - (index as i32 * 40).min(200));
+    }
+
+    best
+}
+
+/// Relevance against the words a pattern can *begin* with.
+///
+/// `(message|send [message[s]]) %objects%` opens with either `message` or
+/// `send`; both are things a user types first, and both deserve a leading-word
+/// score rather than whatever position they happen to occupy once the pattern is
+/// flattened.
+fn relevance_to_keywords(pattern: &str, typed: &str) -> i32 {
+    leading_keywords(pattern)
+        .into_iter()
+        .map(|keyword| relevance(&keyword, typed))
+        .max()
+        .unwrap_or(0)
+}
+
+/// The words a pattern can start with.
+///
+/// One word for a plain pattern, or every alternative when it opens with a
+/// choice. Optionals are skipped: `[the] egg will hatch` starts with `egg` as
+/// far as anyone typing is concerned.
+fn leading_keywords(pattern: &str) -> Vec<String> {
+    let mut chars = pattern.chars().peekable();
+    let mut depth = 0i32;
+
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            '[' => {
+                depth += 1;
+                chars.next();
+            }
+            ']' => {
+                depth = (depth - 1).max(0);
+                chars.next();
+            }
+            _ if depth > 0 => {
+                chars.next();
+            }
+            ' ' => {
+                chars.next();
+            }
+            '(' => {
+                chars.next();
+                let mut branches = vec![String::new()];
+                let mut inner = 0i32;
+                for ch in chars.by_ref() {
+                    match ch {
+                        '(' => {
+                            inner += 1;
+                            branches.last_mut().expect("never empty").push(ch);
+                        }
+                        ')' if inner == 0 => break,
+                        ')' => {
+                            inner -= 1;
+                            branches.last_mut().expect("never empty").push(ch);
+                        }
+                        '|' if inner == 0 => branches.push(String::new()),
+                        _ => branches.last_mut().expect("never empty").push(ch),
+                    }
+                }
+                // Each branch is itself pattern text, so recurse for its own
+                // opening word.
+                return branches
+                    .iter()
+                    .flat_map(|branch| leading_keywords(branch))
+                    .collect();
+            }
+            // A slot or regex hole means the pattern opens with no keyword.
+            '%' | '<' => return Vec::new(),
+            _ => {
+                let word: String = chars
+                    .by_ref()
+                    .take_while(|ch| ch.is_alphanumeric() || *ch == '-')
+                    .collect();
+                return if word.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![word]
+                };
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// A `sortText` that preserves the server's ordering.
+///
+/// Clients sort lexicographically, so the score is inverted into a fixed-width
+/// number. The name breaks ties so equally relevant items keep a stable,
+/// predictable order rather than jumping about between keystrokes.
+fn sort_key(score: i32, name: &str) -> String {
+    format!("{:05}{name}", (9999 - score).max(0))
+}
+
 /// Which branch of a choice to insert.
 ///
 /// The one the user has started typing, when there is one — otherwise the first,
@@ -2476,5 +2681,95 @@ mod completion_insertion {
                 &line[start..]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod relevance_tests {
+    use super::{relevance, sort_key};
+
+    #[test]
+    fn a_word_starting_with_the_query_beats_one_containing_it() {
+        let starts = relevance("send message", "sen");
+        let contains = relevance("resend", "sen");
+        assert!(starts > contains, "{starts} vs {contains}");
+    }
+
+    #[test]
+    fn an_exact_word_beats_a_prefix() {
+        assert!(relevance("send objects", "send") > relevance("sender name", "send"));
+    }
+
+    #[test]
+    fn the_leading_word_beats_a_later_one() {
+        // Both contain `player`, but the one that starts with it is what the
+        // user is typing.
+        let leading = relevance("player is op", "player");
+        let later = relevance("teleport the player somewhere", "player");
+        assert!(leading > later, "{leading} vs {later}");
+    }
+
+    #[test]
+    fn no_match_scores_zero_so_it_can_be_dropped() {
+        assert_eq!(relevance("teleport entities", "zzz"), 0);
+    }
+
+    #[test]
+    fn an_empty_query_keeps_everything() {
+        assert!(relevance("anything at all", "") > 0);
+    }
+
+    /// Clients sort `sortText` lexicographically, so a better score must produce
+    /// a string that sorts earlier.
+    #[test]
+    fn the_sort_key_preserves_the_ordering() {
+        let better = sort_key(1000, "Message");
+        let worse = sort_key(300, "Anything");
+        assert!(
+            better < worse,
+            "a higher score sorted later: {better:?} vs {worse:?}"
+        );
+        // Fixed width, or 1000 would sort beside 100.
+        assert_eq!(better.len() - "Message".len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod keyword_scoring {
+    use super::{leading_keywords, relevance_to_keywords};
+
+    #[test]
+    fn a_choice_yields_every_opening_word() {
+        let mut words = leading_keywords("(message|send [message[s]]) %objects%");
+        words.sort();
+        assert_eq!(words, vec!["message", "send"]);
+    }
+
+    #[test]
+    fn an_optional_prefix_is_skipped() {
+        // Nobody types `[the]`; the keyword is `egg`.
+        assert_eq!(
+            leading_keywords("[the] egg (will|won't) hatch"),
+            vec!["egg"]
+        );
+    }
+
+    #[test]
+    fn a_pattern_opening_with_a_slot_has_no_keyword() {
+        assert!(leading_keywords("%objects% (is|are) set").is_empty());
+        assert!(leading_keywords("<.+>").is_empty());
+    }
+
+    /// The whole point: typing `send` must score Message as highly as anything
+    /// literally named "Send …", because `send` is one of the words Message
+    /// actually begins with.
+    #[test]
+    fn a_leading_alternative_scores_as_a_leading_word() {
+        let message = relevance_to_keywords("(message|send [message[s]]) %objects%", "send");
+        let named = super::relevance("Send Block Change make see as", "send");
+        assert!(
+            message >= named,
+            "Message scored {message}, an entry merely named Send scored {named}"
+        );
     }
 }

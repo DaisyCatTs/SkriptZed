@@ -78,11 +78,20 @@ characters; with semantic tokens it is 97%. Prefer `"combined"` over `"full"` â€
       "semantic_tokens": "combined",
       "tab_size": 4,
       "hard_tabs": true,
+      "formatter": "language_server",
       "format_on_save": "on"
     }
   }
 }
 ```
+
+`"formatter": "language_server"` matters if you have set a global `formatter`.
+Zed applies that to every language, so a global chain ending in external
+prettier means saving a `.sk` file runs
+`prettier --stdin-filepath yourfile.sk` â€” prettier has never heard of Skript, it
+fails, and the Skript formatter is never asked. Naming the language server here
+overrides that for Skript alone.
+
 </details>
 
 Not published to the registry yet? See

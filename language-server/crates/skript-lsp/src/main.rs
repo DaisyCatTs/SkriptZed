@@ -626,12 +626,15 @@ impl LanguageServer for Backend {
             params.text_document_position.position,
             state.encoding,
         );
-        let Some((kind, name)) = symbol_under_cursor(document, position) else {
+        let Some((kind, name, scope)) = scoped_symbol_under_cursor(document, position) else {
             return Ok(None);
         };
 
         let mut locations = Vec::new();
-        for (target, reference) in state.workspace.references(kind, &name, &uri) {
+        for (target, reference) in state
+            .workspace
+            .references_in_scope(kind, &name, &uri, scope)
+        {
             if let Ok(target_uri) = Url::parse(target.uri()) {
                 locations.push(Location {
                     uri: target_uri,
@@ -678,7 +681,7 @@ impl LanguageServer for Backend {
             params.text_document_position_params.position,
             state.encoding,
         );
-        let Some((kind, name)) = symbol_under_cursor(document, position) else {
+        let Some((kind, name, scope)) = scoped_symbol_under_cursor(document, position) else {
             return Ok(None);
         };
 
@@ -692,6 +695,13 @@ impl LanguageServer for Backend {
             }
         }
         for reference in &document.symbols().references {
+            // A trigger-local only highlights within its own trigger. Lighting
+            // up every `{_i}` in the file is the thing an experienced developer
+            // notices first and reads as "this does not understand the
+            // language".
+            if kind == SymbolKind::LocalVariable && scope.is_some() && reference.scope != scope {
+                continue;
+            }
             if kinds_alike(kind, reference.kind) && reference.name == name {
                 out.push(DocumentHighlight {
                     range: to_lsp_range(document.text(), reference.range, state.encoding),
@@ -820,7 +830,7 @@ impl LanguageServer for Backend {
             params.text_document_position.position,
             state.encoding,
         );
-        let Some((kind, name)) = symbol_under_cursor(document, position) else {
+        let Some((kind, name, scope)) = scoped_symbol_under_cursor(document, position) else {
             return Ok(None);
         };
 
@@ -839,7 +849,10 @@ impl LanguageServer for Backend {
             }
         }
 
-        for (target, reference) in state.workspace.references(kind, &name, &uri) {
+        for (target, reference) in state
+            .workspace
+            .references_in_scope(kind, &name, &uri, scope)
+        {
             if let Ok(target_uri) = Url::parse(target.uri()) {
                 changes.entry(target_uri).or_default().push(TextEdit {
                     range: to_lsp_range(target.text(), reference.name_range, state.encoding),
@@ -1318,17 +1331,29 @@ fn in_command_entry_position(document: &skript_index::Document, line: u32) -> bo
     false
 }
 
-fn symbol_under_cursor(
+/// The renameable symbol under the cursor, and which trigger a local belongs to.
+///
+/// The scope is what confines a `{_x}` rename to the trigger that owns it,
+/// rather than every trigger in the file.
+fn scoped_symbol_under_cursor(
     document: &skript_index::Document,
     position: skript_index::Position,
-) -> Option<(SymbolKind, String)> {
+) -> Option<(SymbolKind, String, Option<skript_index::Range>)> {
     if let Some(symbol) = document.symbols().declaration_at(position) {
         if renameable(symbol.kind) {
-            return Some((symbol.kind, symbol.name.clone()));
+            // A declaration's own scope is whatever a reference inside it
+            // reports; for a parameter that is the enclosing function.
+            let scope = document
+                .symbols()
+                .references
+                .iter()
+                .find(|reference| reference.kind == symbol.kind && reference.name == symbol.name)
+                .and_then(|reference| reference.scope);
+            return Some((symbol.kind, symbol.name.clone(), scope));
         }
     }
     let reference = document.symbols().reference_at(position)?;
-    renameable(reference.kind).then(|| (reference.kind, reference.name.clone()))
+    renameable(reference.kind).then(|| (reference.kind, reference.name.clone(), reference.scope))
 }
 
 /// Finds the function call the cursor is inside, and which argument it is on.

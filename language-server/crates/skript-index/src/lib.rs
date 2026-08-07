@@ -176,11 +176,34 @@ impl Workspace {
     }
 
     /// Finds every use of `name`, across the workspace where scope allows.
+    ///
+    /// See [`Workspace::references_in_scope`] for trigger-local variables,
+    /// where "every use" is the wrong question.
     pub fn references(
         &self,
         kind: SymbolKind,
         name: &str,
         from_uri: &str,
+    ) -> Vec<(&Document, &Reference)> {
+        self.references_in_scope(kind, name, from_uri, None)
+    }
+
+    /// As [`Workspace::references`], but confined to one trigger when `scope` is
+    /// given.
+    ///
+    /// Skript scopes `{_x}` to the running trigger. Treating it as file-wide
+    /// made rename destructive: renaming `{_i}` in one trigger rewrote every
+    /// other trigger's `{_i}`, and if a sibling already used the new name for
+    /// something else, two unrelated variables were silently merged.
+    ///
+    /// `scope` is ignored for anything that is not a local variable, because
+    /// nothing else is trigger-scoped.
+    pub fn references_in_scope(
+        &self,
+        kind: SymbolKind,
+        name: &str,
+        from_uri: &str,
+        scope: Option<Range>,
     ) -> Vec<(&Document, &Reference)> {
         // Must agree with `definitions`. When it did not, a `local function`'s
         // references were gathered workspace-wide while its definition was
@@ -193,9 +216,15 @@ impl Workspace {
                 continue;
             }
             for reference in &document.symbols().references {
-                if kinds_match(kind, reference.kind) && reference.name == name {
-                    out.push((document, reference));
+                if !kinds_match(kind, reference.kind) || reference.name != name {
+                    continue;
                 }
+                // A trigger-local only matches within the trigger asked about.
+                if kind == SymbolKind::LocalVariable && scope.is_some() && reference.scope != scope
+                {
+                    continue;
+                }
+                out.push((document, reference));
             }
         }
         out
@@ -555,5 +584,91 @@ mod rename_regressions {
             "total",
         );
         assert!(out.contains("{_total}"), "the scope sigil was lost:\n{out}");
+    }
+}
+
+#[cfg(test)]
+mod trigger_scope {
+    use super::*;
+
+    const TWO_TRIGGERS: &str = "on join:\n\tset {_i} to 1\n\tsend \"%{_i}%\" to player\n\non quit:\n\tset {_i} to 99\n\tsend \"%{_i}%\" to player\n";
+
+    /// Skript scopes `{_x}` to the running trigger, and rename must respect it.
+    ///
+    /// Treating locals as file-wide made rename destructive in a way nothing
+    /// warned about: renaming `{_i}` to `{_player}` in one trigger rewrote every
+    /// other trigger's `{_i}` too, and if a sibling already used `{_player}` for
+    /// something else, two unrelated variables were silently merged into one.
+    /// That is a behaviour change with no diagnostic and no visual cue.
+    #[test]
+    fn a_local_belongs_to_its_trigger_only() {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", TWO_TRIGGERS);
+        let document = workspace.get("file:///t.sk").unwrap();
+
+        // The `{_i}` on line 1, in the first trigger.
+        let first = document
+            .symbols()
+            .references
+            .iter()
+            .find(|reference| reference.range.start.line == 1)
+            .expect("the first trigger uses {_i}");
+        assert!(first.scope.is_some(), "a local must know its trigger");
+
+        let scoped = workspace.references_in_scope(
+            SymbolKind::LocalVariable,
+            &first.name,
+            "file:///t.sk",
+            first.scope,
+        );
+        let lines: Vec<u32> = scoped
+            .iter()
+            .map(|(_, reference)| reference.range.start.line)
+            .collect();
+
+        assert!(
+            lines.iter().all(|line| *line < 4),
+            "renaming in the first trigger reached the second: {lines:?}"
+        );
+        assert_eq!(lines.len(), 2, "both uses in the first trigger: {lines:?}");
+    }
+
+    #[test]
+    fn the_two_triggers_have_different_scopes() {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", TWO_TRIGGERS);
+        let document = workspace.get("file:///t.sk").unwrap();
+
+        let scopes: Vec<_> = document
+            .symbols()
+            .references
+            .iter()
+            .filter(|reference| reference.kind == SymbolKind::LocalVariable)
+            .map(|reference| reference.scope)
+            .collect();
+
+        assert!(scopes.iter().all(Option::is_some));
+        assert_ne!(
+            scopes.first(),
+            scopes.last(),
+            "both triggers reported the same scope"
+        );
+    }
+
+    #[test]
+    fn a_global_is_not_trigger_scoped() {
+        // `{score}` has no sigil, so it outlives the trigger and must keep
+        // matching file-wide.
+        let mut workspace = Workspace::new();
+        workspace.open(
+            "file:///t.sk",
+            "on join:\n\tset {score} to 1\n\non quit:\n\tset {score} to 2\n",
+        );
+        let document = workspace.get("file:///t.sk").unwrap();
+        for reference in &document.symbols().references {
+            if reference.kind == SymbolKind::GlobalVariable {
+                assert!(reference.scope.is_none(), "a global was trigger-scoped");
+            }
+        }
     }
 }

@@ -67,6 +67,16 @@ pub struct Reference {
     /// from a prefix instead used to drop the `::*` off a list variable,
     /// silently turning it into a scalar.
     pub name_range: Range,
+    /// For a trigger-local `{_x}`, the structure that owns it.
+    ///
+    /// Skript scopes `{_x}` to the running trigger, not the file. Treating it
+    /// as file-wide made rename destructive in a way nothing warned about:
+    /// renaming `{_i}` to `{_player}` in one trigger rewrote every *other*
+    /// trigger's `{_i}` too, and if a sibling already used `{_player}` for
+    /// something else, two unrelated variables were silently merged into one.
+    ///
+    /// `None` for anything genuinely file- or project-wide.
+    pub scope: Option<Range>,
 }
 
 /// Everything extracted from one document.
@@ -454,6 +464,21 @@ pub fn normalise_variable(raw: &str) -> String {
 }
 
 /// Walks the whole tree for uses of functions, options and variables.
+/// The range of the top-level structure containing `node`.
+///
+/// A trigger scope is exactly "the event, command or function this line is in",
+/// and the tree already says so — walk up until the parent is the file itself.
+fn enclosing_structure(node: Node<'_>) -> Option<Range> {
+    let mut current = node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "source_file" {
+            return Some(current.into());
+        }
+        current = parent;
+    }
+    None
+}
+
 fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
     let mut stack = vec![node];
 
@@ -474,6 +499,8 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                         name: text_of(name, source),
                         range: name.into(),
                         name_range: name.into(),
+                        // Functions are project-wide.
+                        scope: None,
                     });
                 }
             }
@@ -484,6 +511,8 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                         name: text_of(name, source).trim().to_string(),
                         range: name.into(),
                         name_range: name.into(),
+                        // Options are file-wide.
+                        scope: None,
                     });
                 }
             }
@@ -502,11 +531,15 @@ fn collect_references(node: Node<'_>, source: &str, out: &mut FileSymbols) {
                     .child_by_field_name("name")
                     .filter(|name| !has_interpolation(*name))
                 {
+                    let kind = variable_kind(&raw);
                     out.references.push(Reference {
-                        kind: variable_kind(&raw),
+                        kind,
                         name: normalise_variable(&raw),
                         range: current.into(),
                         name_range: name_node.into(),
+                        scope: (kind == SymbolKind::LocalVariable)
+                            .then(|| enclosing_structure(current))
+                            .flatten(),
                     });
                 }
             }

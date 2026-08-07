@@ -478,6 +478,7 @@ mod coverage_regressions {
             name: "giveKit".into(),
             range: skript_index::Range::new(Position::new(1, 1), Position::new(1, 16)),
             name_range: skript_index::Range::new(Position::new(1, 1), Position::new(1, 8)),
+            scope: None,
         });
 
         let text = "on join:\n\tgiveKit(player)\n";

@@ -110,6 +110,18 @@ impl<T> PatternIndex<T> {
     /// literal words and more concretely-typed slots beats a vaguer one, so
     /// `give %item types% to %players%` wins over a bare `%objects%`.
     pub fn matches(&self, line: &str) -> Vec<(&T, Match)> {
+        self.matches_scored(line)
+            .into_iter()
+            .map(|(_, value, matched)| (value, matched))
+            .collect()
+    }
+
+    /// As [`PatternIndex::matches`], but keeping each pattern's specificity.
+    ///
+    /// Callers that know something the index does not — that core Skript should
+    /// outrank an addon offering an equally specific pattern, say — need the
+    /// score to tell "equally good" from "genuinely better".
+    pub fn matches_scored(&self, line: &str) -> Vec<(i32, &T, Match)> {
         let mut results: Vec<(i32, &T, Match)> = Vec::new();
 
         for index in self.candidates(line) {
@@ -122,9 +134,6 @@ impl<T> PatternIndex<T> {
         // Most specific first.
         results.sort_by_key(|entry| std::cmp::Reverse(entry.0));
         results
-            .into_iter()
-            .map(|(_, value, matched)| (value, matched))
-            .collect()
     }
 
     /// The single best match, or `None` when the line matches nothing.

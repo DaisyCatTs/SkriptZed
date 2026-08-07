@@ -165,11 +165,41 @@ impl Catalog {
     /// intact across categories: `allowed` is a membership test, not a priority
     /// list.
     fn first_in(&self, line: &str, allowed: &[Category]) -> Option<(EntryId, Match)> {
-        self.index
-            .matches(line)
-            .into_iter()
-            .find(|(id, _)| allowed.contains(&id.category))
-            .map(|(id, matched)| (*id, matched))
+        let ranked = self.index.matches_scored(line);
+        let mut best: Option<(i32, EntryId, Match)> = None;
+
+        for (score, id, matched) in ranked {
+            if !allowed.contains(&id.category) {
+                continue;
+            }
+            match &best {
+                // Nothing yet, or this pattern is strictly more specific.
+                None => best = Some((score, *id, matched)),
+                Some((top, top_id, _)) if score > *top => {
+                    let _ = top_id;
+                    best = Some((score, *id, matched));
+                }
+                // Equally specific: core Skript wins. With 168 addons loaded,
+                // `send "hi" to player` otherwise resolved to an addon's
+                // "send bungee player to server" rather than to Message —
+                // whichever happened to sort first. The user's own server runs
+                // Skript; an addon has to be *more* specific to outrank it.
+                Some((top, _, _)) if score == *top => {
+                    let incumbent_is_addon = best
+                        .as_ref()
+                        .and_then(|(_, id, _)| self.entry(*id))
+                        .is_some_and(|entry| entry.addon.is_some());
+                    let challenger_is_core =
+                        self.entry(*id).is_some_and(|entry| entry.addon.is_none());
+                    if incumbent_is_addon && challenger_is_core {
+                        best = Some((score, *id, matched));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        best.map(|(_, id, matched)| (id, matched))
     }
 
     /// Entries in `category` whose name or patterns contain `query`.

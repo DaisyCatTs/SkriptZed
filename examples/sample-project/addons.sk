@@ -1,0 +1,50 @@
+###
+Addon syntax.
+
+Every line below belongs to an addon, not to core Skript. What you see depends
+on what your server actually has installed:
+
+  * addon installed  — hover, completion and colour, same as core syntax
+  * addon missing    — the line stays plain, and says nothing
+
+That silence is deliberate. There are 168 addons and 12,877 patterns published;
+guessing would mean a wall of false errors on every real server.
+
+To see the difference, point the server at a real server directory:
+
+  "lsp": { "skript-lsp": { "initialization_options": {
+    "serverPath": "/srv/minecraft/my-server"
+  } } }
+###
+
+# ---------------------------------------------------------------- SkBee (NBT)
+
+on rightclick with a stick:
+	set {_nbt} to nbt compound of event-block
+	if {_nbt} is a blank nbt compound:
+		send "no data" to player
+		stop
+	set {_id} to tag "minecraft:custom" of {_nbt}
+	send "%{_id}%" to player
+
+# --------------------------------------------------------- SkBee (structures)
+
+on load:
+	set {_creator} to a new world creator named "lobby"
+	set {_bound} to bound between {_a} and {_b}
+
+# ----------------------------------------------------- skript-reflect (import)
+
+import:
+	java.util.UUID
+	org.bukkit.Bukkit
+
+on script load:
+	set {_version} to Bukkit.getVersion()
+
+# -------------------------------------------------------------------- unknown
+
+# Syntax from an addon nothing knows about. It parses — indentation, strings and
+# variables are all still structural — but it is never reported as an error.
+on some undocumented addon event:
+	do the undocumented thing with {_x}

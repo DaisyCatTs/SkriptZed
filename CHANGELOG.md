@@ -13,6 +13,8 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-08-07
+
 ### Added
 
 - **skript-reflect's Java calls are coloured.** `Bukkit.getVersion`,

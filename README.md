@@ -152,6 +152,36 @@ To use a language server you built or installed yourself:
 { "lsp": { "skript-lsp": { "binary": { "path": "/path/to/skript-lsp" } } } }
 ```
 
+<details>
+<summary>Using the Discord presence extension? Skript needs one line</summary>
+
+[zed-discord-presence](https://github.com/xhyrom/zed-discord-presence) builds its
+icon URL from the language name, so it asks for a `skript.png` that its icon
+repository does not have — and your Skript files show nothing. Point it at an
+icon that exists, in **its** settings, not this extension's:
+
+```json
+{
+  "lsp": {
+    "discord_presence": {
+      "initialization_options": {
+        "languages": {
+          "skript": {
+            "large_image": "{base_icons_url}/zed.png",
+            "large_text": "Skript"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Swap `large_image` for any image URL you would rather use. This extension
+deliberately does not touch Discord presence — that is another extension's job.
+
+</details>
+
 ## Themes
 
 No colour is named anywhere in this extension. Highlighting uses capture names

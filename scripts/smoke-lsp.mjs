@@ -50,6 +50,8 @@ console.log(`  binary: ${binary}\n`);
 // is never opened by the client: resolving a call into it proves the server
 // indexed the folder from disk rather than only tracking open buffers.
 
+const vendorDocs = join(root, 'vendor', 'docs.json');
+
 const project = join(tmpdir(), `skript-lsp-smoke-${process.pid}`);
 rmSync(project, { recursive: true, force: true });
 mkdirSync(join(project, 'nested'), { recursive: true });
@@ -207,6 +209,12 @@ try {
       customSyntaxPaths: [customSyntax],
       // The live catalog is exercised by the Rust tests; keep this offline.
       addonSyntaxSource: 'off',
+      // Without this the server falls back to downloading docs.json from
+      // docs.skriptlang.org, and the run then passes or fails on whether that
+      // download beat the first request — which is exactly what happened in
+      // CI: green on Windows one run, red the next, for no local reason.
+      // `vendor/docs.json` is placed by scripts/fetch-docs.mjs.
+      ...(existsSync(vendorDocs) ? { docsPath: vendorDocs } : {}),
     },
   });
 

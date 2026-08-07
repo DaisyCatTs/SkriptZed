@@ -209,6 +209,7 @@ try {
     'workspaceSymbolProvider',
     'documentFormattingProvider',
     'signatureHelpProvider',
+    'callHierarchyProvider',
   ]) {
     check(`advertises ${capability}`, caps[capability] !== undefined);
   }
@@ -277,6 +278,26 @@ try {
   });
   check('find-references sees the call site', (references.result ?? []).length >= 1);
 
+  // Call hierarchy: `greet` is called from the `/hello` trigger, so opening a
+  // hierarchy on the declaration must find the command as its caller. An event
+  // or a command counts as a caller in Skript — see hierarchy.rs.
+  const prepared = await send('textDocument/prepareCallHierarchy', {
+    textDocument: { uri },
+    position: { line: 3, character: 10 },
+  });
+  const rootItem = (prepared.result ?? [])[0];
+  check('prepares a call hierarchy on a function', rootItem?.name === 'greet');
+
+  if (rootItem) {
+    const incoming = await send('callHierarchy/incomingCalls', { item: rootItem });
+    const callers = (incoming.result ?? []).map(call => call.from.name);
+    check('incoming calls name the calling command', callers.includes('hello'), JSON.stringify(callers));
+    check(
+      'incoming calls carry the call site',
+      ((incoming.result ?? [])[0]?.fromRanges ?? []).length >= 1,
+    );
+  }
+
   const rename = await send('textDocument/rename', {
     textDocument: { uri },
     position: { line: 3, character: 10 },
@@ -291,6 +312,14 @@ try {
   });
   const items = completion.result?.items ?? completion.result ?? [];
   check('completion offers the declared function', items.some(i => i.label === 'greet'));
+  // The pattern belongs beside the name and the provenance right-aligned; one
+  // crammed `detail` string made a long list unscannable.
+  const syntaxItem = items.find(i => i.labelDetails?.description);
+  check(
+    'completion splits the signature from its provenance',
+    !!syntaxItem?.labelDetails?.detail,
+    JSON.stringify(syntaxItem?.labelDetails ?? null),
+  );
   check(
     'completion offers a function from an unopened file',
     items.some(i => i.label === 'shared_helper'),

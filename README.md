@@ -105,6 +105,7 @@ Not published to the registry yet? See
 | **Indentation** | Auto-indent after any `:` line, `else` snapping back to its `if`, and Skript's `#-#` marker for a colon that does *not* open a section |
 | **Folding & outline** | Every event, command, function and section, with commands showing their entries nested underneath |
 | **Navigation** | Go to definition, find references and rename — project-wide, including files you have not opened, respecting `local function` and file-scoped `{_variables}` |
+| **Call hierarchy** | Who calls this function, and what it calls. Events and commands count as callers, because that is where a function actually runs from |
 | **Hover** | Description, syntax, examples, event values, `since`, deprecation and addon requirements, from Skript's own database |
 | **Completion** | Context-aware: only events after `on `, only conditions inside `if `, only expressions inside `%…%`. Inserts as snippets with a tab stop per slot |
 | **Signature help** | Parameters as you type a function call |
@@ -273,6 +274,18 @@ detected, and what it fell back to.
 **Nothing is highlighted at all.** The grammar failed to build. Zed's log
 (`zed: open log`) will say why; a missing wasi-sdk or an unreachable grammar
 revision are the usual causes.
+
+**Which version am I actually running?** Two separate things, so check both:
+
+* **The extension** — its version is in the Extensions panel.
+* **The language server** — Zed's log (`zed: open log`) records the binary it
+  started, and the folder name is the release tag:
+  `…/extensions/work/skript/skript-lsp-v0.2.0/skript-lsp`. You can also run that
+  binary with `--version`.
+
+The server's update check is cached for a day, so a release published in the
+last 24 hours may not have been picked up yet. Quit Zed, delete the
+`extensions/work/skript` folder, and reopen to force a fresh download.
 
 **My addon's syntax is not recognised.** Check the log for what was detected. If
 your addon is not on SkriptHub, point `customSyntaxPaths` at its syntax file.

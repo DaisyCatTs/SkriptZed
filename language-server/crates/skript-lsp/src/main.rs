@@ -17,6 +17,7 @@
 mod convert;
 mod diagnostics;
 mod entries;
+mod hierarchy;
 mod semantic;
 
 use std::sync::Arc;
@@ -300,6 +301,7 @@ impl LanguageServer for Backend {
                 document_formatting_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
+                call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".into(), ",".into()]),
@@ -308,6 +310,9 @@ impl LanguageServer for Backend {
                 }),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
+                    completion_item: Some(CompletionOptionsCompletionItem {
+                        label_details_support: Some(true),
+                    }),
                     // Deliberately **not** a space. Skript is written in prose,
                     // so a space-triggered popup is open almost all the time —
                     // and while it is open the editor gives Enter to the
@@ -734,6 +739,85 @@ impl LanguageServer for Backend {
         Ok(Some(locations))
     }
 
+    /// Opens a call hierarchy on the function under the cursor.
+    ///
+    /// Answers what a flat reference list cannot: which trigger or function each
+    /// call sits *inside*. See `hierarchy.rs` for why an event counts as a
+    /// caller.
+    async fn prepare_call_hierarchy(
+        &self,
+        params: CallHierarchyPrepareParams,
+    ) -> RpcResult<Option<Vec<CallHierarchyItem>>> {
+        let state = self.state.read().await;
+        let uri = params.text_document_position_params.text_document.uri;
+        let Some(document) = state.workspace.get(uri.as_str()) else {
+            return Ok(None);
+        };
+
+        let position = from_lsp_position(
+            document.text(),
+            params.text_document_position_params.position,
+            state.encoding,
+        );
+        let items: Vec<_> = hierarchy::prepare(&state.workspace, document, position)
+            .iter()
+            .filter_map(|node| hierarchy_item(node, state.encoding))
+            .collect();
+
+        Ok((!items.is_empty()).then_some(items))
+    }
+
+    async fn incoming_calls(
+        &self,
+        params: CallHierarchyIncomingCallsParams,
+    ) -> RpcResult<Option<Vec<CallHierarchyIncomingCall>>> {
+        let state = self.state.read().await;
+        let Some(node) = resolve_item(&state.workspace, &params.item, state.encoding) else {
+            return Ok(None);
+        };
+
+        let calls = hierarchy::incoming(&state.workspace, &node)
+            .iter()
+            .filter_map(|call| {
+                Some(CallHierarchyIncomingCall {
+                    from: hierarchy_item(&call.node, state.encoding)?,
+                    from_ranges: ranges(&call.node, &call.ranges, state.encoding),
+                })
+            })
+            .collect();
+
+        Ok(Some(calls))
+    }
+
+    async fn outgoing_calls(
+        &self,
+        params: CallHierarchyOutgoingCallsParams,
+    ) -> RpcResult<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let state = self.state.read().await;
+        let Some(node) = resolve_item(&state.workspace, &params.item, state.encoding) else {
+            return Ok(None);
+        };
+
+        // The call sites are in the *caller's* file, which is the item we were
+        // asked about — not in the callee's, which is where `call.node` lives.
+        let text = node.document.text().to_string();
+        let calls = hierarchy::outgoing(&state.workspace, &node)
+            .iter()
+            .filter_map(|call| {
+                Some(CallHierarchyOutgoingCall {
+                    to: hierarchy_item(&call.node, state.encoding)?,
+                    from_ranges: call
+                        .ranges
+                        .iter()
+                        .map(|range| to_lsp_range(&text, *range, state.encoding))
+                        .collect(),
+                })
+            })
+            .collect();
+
+        Ok(Some(calls))
+    }
+
     /// Highlights every other use of the symbol under the cursor.
     ///
     /// Restricted to the current file by definition of the request, so it does
@@ -1039,6 +1123,10 @@ impl LanguageServer for Backend {
                 CompletionItem {
                     label: symbol.name.clone(),
                     kind: Some(kind),
+                    label_details: Some(CompletionItemLabelDetails {
+                        detail: (!symbol.detail.is_empty()).then(|| format!(" {}", symbol.detail)),
+                        description: Some("this project".into()),
+                    }),
                     detail: (!symbol.detail.is_empty()).then(|| symbol.detail.clone()),
                     sort_text: Some(sort_key(score, &symbol.name)),
                     ..Default::default()
@@ -1054,13 +1142,18 @@ impl LanguageServer for Backend {
                     let Some(pattern) = entry.patterns.first() else {
                         continue;
                     };
+                    // Split across the two slots a client renders separately:
+                    // the pattern sits next to the name, where it reads as a
+                    // signature, and provenance is right-aligned out of the way.
+                    // One crammed string made a long list unscannable.
+                    let signature = format!(" {pattern}");
+
                     // Where it comes from matters more than the category when
-                    // several addons are loaded, so it leads the detail line.
-                    let mut detail = match &entry.addon {
+                    // several addons are loaded, so it leads.
+                    let mut provenance = match &entry.addon {
                         Some(addon) => format!("{} · {}", addon.name, category.label()),
                         None => category.label().to_string(),
                     };
-                    detail.push_str(&format!(" · {pattern}"));
 
                     // Syntax the target Skript cannot run is labelled and sunk,
                     // never hidden: a quarter of `since` values are free text,
@@ -1068,8 +1161,12 @@ impl LanguageServer for Backend {
                     // failure.
                     let availability = catalog.availability(id);
                     if let Some(note) = &availability {
-                        detail = format!("{note} · {detail}");
+                        provenance = format!("{note} · {provenance}");
                     }
+
+                    // `detail` is still filled, because a client that ignores
+                    // `labelDetails` would otherwise show nothing at all.
+                    let detail = format!("{provenance} ·{signature}");
 
                     // Core Skript first, then addons, then anything the target
                     // version cannot run.
@@ -1103,6 +1200,10 @@ impl LanguageServer for Backend {
                         CompletionItem {
                             label: entry.name.clone(),
                             kind: Some(CompletionItemKind::SNIPPET),
+                            label_details: Some(CompletionItemLabelDetails {
+                                detail: Some(signature),
+                                description: Some(provenance),
+                            }),
                             detail: Some(detail),
                             // The label is the documentation *title*; the user types
                             // the *pattern*. Zed filters on the label alone, so
@@ -1435,7 +1536,7 @@ impl Backend {
     }
 
     async fn publish(&self, uri: &str) {
-        let (found, encoding) = {
+        let (found, encoding, url) = {
             let state = self.state.read().await;
             let Some(document) = state.workspace.get(uri) else {
                 return;
@@ -1455,6 +1556,12 @@ impl Backend {
                 state.diagnostics,
             );
             let text = document.text().to_string();
+            // Related locations are always in this same file — every check that
+            // produces one works from a single document's symbol tree.
+            let url = match Url::parse(uri) {
+                Ok(url) => url,
+                Err(_) => return,
+            };
             let converted: Vec<Diagnostic> = found
                 .into_iter()
                 .map(|diagnostic| Diagnostic {
@@ -1472,21 +1579,79 @@ impl Backend {
                     // gives the line a strikethrough rather than just a colour.
                     tags: (diagnostic.code == "deprecated-syntax")
                         .then(|| vec![DiagnosticTag::DEPRECATED]),
+                    // Rendered as a link the user can jump to, which for a
+                    // duplicate declaration is the actual fix.
+                    related_information: (!diagnostic.related.is_empty()).then(|| {
+                        diagnostic
+                            .related
+                            .into_iter()
+                            .map(|related| DiagnosticRelatedInformation {
+                                location: Location {
+                                    uri: url.clone(),
+                                    range: to_lsp_range(&text, related.range, state.encoding),
+                                },
+                                message: related.message,
+                            })
+                            .collect()
+                    }),
                     message: diagnostic.message,
                     ..Default::default()
                 })
                 .collect();
-            (converted, state.encoding)
+            (converted, state.encoding, url)
         };
         let _ = encoding;
 
-        if let Ok(parsed) = Url::parse(uri) {
-            self.client.publish_diagnostics(parsed, found, None).await;
-        }
+        self.client.publish_diagnostics(url, found, None).await;
     }
 }
 
 // ------------------------------------------------------------------ helpers
+
+/// Converts a hierarchy node into the item a client renders.
+fn hierarchy_item(node: &hierarchy::Node<'_>, encoding: Encoding) -> Option<CallHierarchyItem> {
+    let text = node.document.text();
+    Some(CallHierarchyItem {
+        name: node.symbol.name.clone(),
+        kind: lsp_symbol_kind(node.symbol.kind),
+        tags: None,
+        detail: hierarchy::detail(node.symbol),
+        uri: Url::parse(node.document.uri()).ok()?,
+        range: to_lsp_range(text, node.symbol.range, encoding),
+        selection_range: to_lsp_range(text, node.symbol.selection_range, encoding),
+        data: None,
+    })
+}
+
+/// Finds the declaration a client's item refers to.
+///
+/// The item is round-tripped through the client, so nothing in it can be
+/// trusted to still be valid — the document may have been edited, or closed and
+/// reopened, since it was handed out. Re-resolving by position is what keeps a
+/// stale item from producing a hierarchy for the wrong function.
+fn resolve_item<'a>(
+    workspace: &'a Workspace,
+    item: &CallHierarchyItem,
+    encoding: Encoding,
+) -> Option<hierarchy::Node<'a>> {
+    let document = workspace.get(item.uri.as_str())?;
+    let position = from_lsp_position(document.text(), item.selection_range.start, encoding);
+    let symbol = document.symbols().declaration_at(position)?;
+    (symbol.name == item.name).then_some(hierarchy::Node { document, symbol })
+}
+
+/// Call-site ranges, resolved against the document they were found in.
+fn ranges(
+    node: &hierarchy::Node<'_>,
+    ranges: &[skript_index::Range],
+    encoding: Encoding,
+) -> Vec<Range> {
+    let text = node.document.text();
+    ranges
+        .iter()
+        .map(|range| to_lsp_range(text, *range, encoding))
+        .collect()
+}
 
 fn markdown(value: String) -> MarkupContent {
     MarkupContent {
@@ -2356,6 +2521,23 @@ fn load_everything(settings: &Settings, roots: &[std::path::PathBuf]) -> Loaded 
 
 #[tokio::main]
 async fn main() {
+    // Answered before anything else, because the alternative is a binary that
+    // silently blocks on stdin. `skript-lsp --version` looks like it hung, and
+    // there is otherwise no way to check which build Zed downloaded without
+    // reading the JSON-RPC log.
+    if std::env::args().skip(1).any(|argument| {
+        matches!(
+            argument.as_str(),
+            "--version" | "-V" | "--help" | "-h" | "-?"
+        )
+    }) {
+        println!("skript-lsp {}", env!("CARGO_PKG_VERSION"));
+        println!();
+        println!("A language server for Skript, speaking LSP over stdio.");
+        println!("It is started by an editor, not run directly.");
+        return;
+    }
+
     // stdout is the protocol channel and must carry nothing else.
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();

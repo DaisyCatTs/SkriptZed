@@ -1,50 +1,105 @@
 ###
-Addon syntax.
+Addon syntax, all in one file.
 
-Every line below belongs to an addon, not to core Skript. What you see depends
-on what your server actually has installed:
+Nothing here is core Skript. Every line belongs to an addon, and what you see
+depends on what your server actually has installed:
 
-  * addon installed  — hover, completion and colour, same as core syntax
-  * addon missing    — the line stays plain, and says nothing
+  * addon installed  — hover, completion and colour, exactly like core syntax
+  * addon missing    — the line stays plain and says nothing
 
-That silence is deliberate. There are 168 addons and 12,877 patterns published;
-guessing would mean a wall of false errors on every real server.
+That silence is deliberate. There are 168 published addons and 12,877 patterns
+between them; guessing would mean a wall of false errors on every real server.
+So the extension tells you what it *found*, never what it assumed.
 
-To see the difference, point the server at a real server directory:
+To see the difference, point the server at a real server directory — it reads
+the JARs in `plugins/` and loads syntax only for what is genuinely there:
 
   "lsp": { "skript-lsp": { "initialization_options": {
     "serverPath": "/srv/minecraft/my-server"
   } } }
+
+Every line below is checked against the published catalog by
+`crates/skript-docs/tests/addon_examples.rs`, which asserts that each one
+resolves to the addon whose heading it sits under. Addon syntax written from
+memory is wrong surprisingly often, and a wrong line here would be invisible:
+it would look exactly like an addon you have not installed.
 ###
 
-# ---------------------------------------------------------------- SkBee (NBT)
+# === SkBee ===
+#
+# The most widely installed addon by some distance — NBT, item components,
+# recipes, world border and chunk generation.
 
-on rightclick with a stick:
-	set {_nbt} to nbt compound of event-block
-	if {_nbt} is a blank nbt compound:
-		send "no data" to player
-		stop
-	set {_id} to tag "minecraft:custom" of {_nbt}
-	send "%{_id}%" to player
+on virtual furnace smelt:
+	stop
 
-# --------------------------------------------------------- SkBee (structures)
+on virtual furnace fuel burning:
+	stop
 
-on load:
-	set {_creator} to a new world creator named "lobby"
-	set {_bound} to bound between {_a} and {_b}
+on quit:
+	apply tool component to player's tool
 
-# ----------------------------------------------------- skript-reflect (import)
+# === skript-reflect ===
+#
+# Java interop and custom events. Mixed into most large projects, and the reason
+# `import:` shows up at the top of so many scripts.
 
-import:
-	java.util.UUID
-	org.bukkit.Bukkit
+on custom event "my-plugin-event":
+	stop
 
-on script load:
-	set {_version} to Bukkit.getVersion()
+on join:
+	call event {_event}
+	delay the current effect
 
-# -------------------------------------------------------------------- unknown
+# === SkQuery ===
+#
+# One of the oldest addons still in use. Mostly extra events.
 
-# Syntax from an addon nothing knows about. It parses — indentation, strings and
-# variables are all still structural — but it is never reported as an error.
-on some undocumented addon event:
-	do the undocumented thing with {_x}
+on sheep dye:
+	stop
+
+on vehicle collide with block:
+	stop
+
+# === TuSKe ===
+#
+# GUIs and clans. Long unmaintained, still everywhere.
+
+on clan chat:
+	stop
+
+on clan create:
+	stop
+
+on ally clan add:
+	stop
+
+# === skRayFall ===
+#
+# Citizens NPC control, holograms and JSON messages.
+
+on join:
+	make citizen 1 hold a diamond sword
+	make citizen 2 look at player's location
+	make citizen 3 invulnerable
+	give npc 4 the look close trait
+
+# === MundoSK ===
+#
+# Custom world generators, packets and tab completion.
+
+on tab complete:
+	stop
+
+on quit:
+	load chunk {_chunk}
+
+# === Lusk ===
+#
+# A newer, actively maintained addon — anvil GUIs, entity behaviour and a large
+# expression library.
+
+on join:
+	randomly teleport player
+	teleport player towards target entity
+	close lusk anvil gui {_gui}

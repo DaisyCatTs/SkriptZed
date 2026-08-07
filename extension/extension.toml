@@ -1,6 +1,6 @@
 id = "skript"
 name = "Skript"
-version = "0.2.0"
+version = "0.2.1"
 schema_version = 1
 description = "Skript language support for Minecraft servers — syntax highlighting, autocomplete, hover docs, diagnostics and go-to-definition for .sk files."
 repository = "https://github.com/DaisyCatTs/SkriptZed"

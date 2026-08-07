@@ -13,6 +13,8 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-07
+
 ### Fixed
 
 - **Core Skript syntax is no longer mistaken for an addon's.** Ranking scored

@@ -13,6 +13,30 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-07
+
+### Added
+
+- **Call hierarchy.** Right-click a function and ask who calls it, or what it
+  calls. Events and commands appear as callers alongside other functions,
+  because in Skript they are the places a function actually runs from. Two
+  calls in one trigger collapse into one entry rather than repeating it, and a
+  `local function`'s callers are confined to its own file.
+- **A duplicate declaration now links to the first one.** The diagnostic on the
+  second `function payout()` points back at the first, so the fix is one click
+  rather than a search.
+- **`skript-lsp --version`.** Previously the binary had no flags at all, so
+  running it by hand looked like it had hung — it was waiting for LSP traffic
+  on stdin. It now prints its version and exits.
+
+### Changed
+
+- **Completion items read as two columns.** The pattern sits next to the name
+  where it works as a signature, and the addon and category are right-aligned
+  out of the way. Everything used to be crammed into one line, which made a
+  long list unscannable. Clients that do not support this still get the old
+  single string.
+
 ## [0.1.0] — 2026-08-07
 
 First release. Zed had no Skript support of any kind before this, so everything

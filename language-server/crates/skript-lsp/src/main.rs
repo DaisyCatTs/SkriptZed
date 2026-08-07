@@ -16,6 +16,7 @@
 
 mod convert;
 mod diagnostics;
+mod entries;
 mod semantic;
 
 use std::sync::Arc;
@@ -509,6 +510,19 @@ impl LanguageServer for Backend {
         };
         let line = document.line(position.line);
         let code = line.trim().trim_end_matches(':');
+
+        // A structure entry is not a syntax pattern, so the catalog can never
+        // explain it. `docs.json` describes no entries at all, which is why
+        // these are the one curated table in the server — see `entries`.
+        if in_command_entry_position(document, position.line) {
+            if let Some(entry) = entries::lookup(entries::COMMAND, code) {
+                return Ok(Some(Hover {
+                    contents: HoverContents::Markup(markdown(entries::hover(entry))),
+                    range: None,
+                }));
+            }
+        }
+
         // Same role filter as semantic tokens and diagnostics — hovering a line
         // must never claim it is the "Creature/Entity/Player/…" expression just
         // because that pattern is `[the] [event-]<.+>` and matches anything.
@@ -849,6 +863,33 @@ impl LanguageServer for Backend {
         let line = document.line(position.line);
         let prefix = convert::line_prefix(line, position.character);
         let mut items = Vec::new();
+
+        // Inside a command, the useful suggestions are its entries — not the
+        // 1,200 effects that cannot legally appear there. Offering those was
+        // the single most misleading thing completion did.
+        if in_command_entry_position(document, position.line) && !prefix.contains(':') {
+            for entry in entries::COMMAND {
+                items.push(CompletionItem {
+                    label: format!("{}:", entry.key),
+                    kind: Some(CompletionItemKind::PROPERTY),
+                    detail: Some("command entry".into()),
+                    documentation: Some(Documentation::MarkupContent(markdown(entries::hover(
+                        entry,
+                    )))),
+                    insert_text: Some(match entry.key {
+                        // The only entry that opens a section.
+                        "trigger" => "trigger:
+	$0"
+                        .to_string(),
+                        key => format!("{key}: $0"),
+                    }),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    sort_text: Some(format!("0{}", entry.key)),
+                    ..Default::default()
+                });
+            }
+            return Ok(Some(CompletionResponse::Array(items)));
+        }
 
         // Declared symbols always come first: they are the user's own code.
         //
@@ -1295,6 +1336,41 @@ fn argument_offsets(text: &str, line: u32, after_name: u32) -> Vec<u32> {
     }
 
     offsets
+}
+
+/// Whether `line` is a position where a command *entry* belongs.
+///
+/// True directly inside a `command` body, and false again once inside one of
+/// its sections — `trigger:` holds statements, not entries, and offering entry
+/// keys there would replace exactly the suggestions the user needs.
+///
+/// Read from the index rather than by scanning upwards for the `command`
+/// keyword, so a command mentioned in a comment or a string is never mistaken
+/// for one, and from the symbol tree rather than from indent width, which
+/// varies per file.
+fn in_command_entry_position(document: &skript_index::Document, line: u32) -> bool {
+    for symbol in &document.symbols().symbols {
+        if symbol.kind != SymbolKind::Command
+            || line <= symbol.range.start.line
+            || line > symbol.range.end.line
+        {
+            continue;
+        }
+        // Inside the command. Now rule out its sections. An entry that spans
+        // more than its own line is one that opened a body — `trigger:` — and
+        // everything below that line is code, not entries.
+        //
+        // Deliberately not testing whether the child has children of its own: a
+        // trigger whose body is plain statements has none, which made an
+        // earlier version of this offer entry keys in the middle of a trigger
+        // and replace the suggestions the user actually needed.
+        let inside_body = symbol
+            .children
+            .iter()
+            .any(|child| line > child.range.start.line && line <= child.range.end.line);
+        return !inside_body;
+    }
+    false
 }
 
 fn symbol_under_cursor(
@@ -1837,5 +1913,36 @@ mod inlay_hint_helpers {
     fn a_name_not_followed_by_a_paren_yields_nothing() {
         // Guards against hinting on something that only looked like a call.
         assert!(argument_offsets("set {_x} to 5", 0, 3).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod entry_position_tests {
+    use super::in_command_entry_position;
+    use skript_index::Workspace;
+
+    /// Entry keys belong directly in a command's body — and nowhere else.
+    /// Offering them inside `trigger:` replaces the effect and function
+    /// suggestions the user actually needs there, which is worse than offering
+    /// nothing at all.
+    #[test]
+    fn entries_belong_in_the_command_body_but_not_in_its_trigger() {
+        let source = "command /hello <text>:\n\tpermission: skript.hello\n\ttrigger:\n\t\tsend \"hi\" to player\n\t\tstop\n\non join:\n\tstop\n";
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+        let document = workspace.get("file:///t.sk").unwrap();
+
+        // Directly inside the command.
+        assert!(in_command_entry_position(document, 1), "the entry line");
+
+        // Inside the trigger's body. An earlier version tested whether the
+        // trigger had *child sections*; a trigger of plain statements has none,
+        // so it wrongly reported an entry position here.
+        assert!(!in_command_entry_position(document, 3), "inside trigger");
+        assert!(!in_command_entry_position(document, 4), "inside trigger");
+
+        // Outside the command entirely.
+        assert!(!in_command_entry_position(document, 0), "the header itself");
+        assert!(!in_command_entry_position(document, 7), "inside an event");
     }
 }

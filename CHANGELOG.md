@@ -78,6 +78,14 @@ below is new.
 
 ### Fixed before release
 
+- Structure entries (`permission:`, `cooldown:`, `trigger:`, `options:` names)
+  now classify, hover and complete. Inside a command, completion offers its
+  entries rather than the effects that cannot legally appear there. Every line
+  of every example script Skript ships is now understood.
+- A space was registered as a completion trigger, so the popup was open while
+  typing ordinary prose and the editor gave Enter to the completion instead of
+  to a newline.
+
 - Alternatives inside a group that carry a space — `(is|are)(n't| not)`,
   `ha(s|ve)[(n't| not)]`, `off[ |-]hand` — matched only their contracted
   spelling, so everyday conditions like `{_x} is not set` and `{_p} is IP

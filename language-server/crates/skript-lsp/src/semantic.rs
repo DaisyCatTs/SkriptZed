@@ -159,6 +159,29 @@ pub fn tokens(
                     modifiers,
                 );
             }
+            // An event header's slots are claimed too, as the type they filter
+            // on. Elsewhere a hole is left to the grammar on purpose — a string
+            // inside `send "hi" to player` should stay string-coloured — but an
+            // event header is the one place the grammar captures the *whole*
+            // name, slot included, as `@function`. Leaving the hole there meant
+            // `on left-click on a sign:` came out two-tone, with `a sign`
+            // keeping a stale colour that also claimed it was a function.
+            //
+            // `skriptType` is honest here rather than a convenience: an event
+            // pattern's slot is a type filter by construction
+            // (`%entity types%`, `%item types%`, `%worlds%`).
+            if id.category == Category::Event && end > start {
+                push_span(
+                    &mut tokens,
+                    code,
+                    line_number,
+                    offset,
+                    start,
+                    end,
+                    TYPE,
+                    modifiers,
+                );
+            }
             cursor = cursor.max(end);
         }
     }
@@ -168,6 +191,9 @@ pub fn tokens(
 
 /// Index of the `function` token type in [`TOKEN_TYPES`].
 const FUNCTION: u32 = 7;
+
+/// Index of `skriptType` in [`TOKEN_TYPES`].
+const TYPE: u32 = 6;
 
 /// Index of `skriptStructure` in [`TOKEN_TYPES`].
 const STRUCTURE: u32 = 5;
@@ -357,6 +383,71 @@ fn encode(
 
 #[cfg(test)]
 mod tests {
+    /// Every `token_type` the extension maps must be one the server can emit.
+    ///
+    /// These two files are edited independently and nothing links them, so a
+    /// rule naming a token that does not exist is silently dead config — it
+    /// looks like the colour is configured and it can never apply.
+    /// `skriptEventValue` sat there exactly that way.
+    #[test]
+    fn every_mapped_token_type_is_one_the_server_emits() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../extension/languages/skript/semantic_token_rules.json"
+        );
+        let Ok(text) = std::fs::read_to_string(path) else {
+            eprintln!("extension not present — skipping");
+            return;
+        };
+
+        // Strip the `//` comments the file is documented with; Zed's parser
+        // accepts them, `serde_json` does not.
+        let stripped: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let rules: Vec<serde_json::Value> =
+            serde_json::from_str(&stripped).expect("semantic_token_rules.json parses");
+
+        let known: Vec<&str> = super::TOKEN_TYPES.to_vec();
+        // The standard LSP types the legend does not carry are still legitimate
+        // to map: another server, or a future version of this one, may emit
+        // them. Only a `skript*` name is ours to get wrong.
+        for rule in &rules {
+            let name = rule["token_type"].as_str().expect("token_type is a string");
+            if name.starts_with("skript") {
+                assert!(
+                    known.contains(&name),
+                    "semantic_token_rules.json maps `{name}`, which the server never emits"
+                );
+            }
+        }
+    }
+
+    /// The `FUNCTION` / `TYPE` / `STRUCTURE` constants are hand-written indices
+    /// into `TOKEN_TYPES`. Nothing else ties them to the array, so reordering
+    /// or inserting a type would silently recolour whole categories — every
+    /// event slot rendering as a function, say. This is the only thing standing
+    /// between that and a release.
+    #[test]
+    fn the_hand_written_token_indices_match_the_legend() {
+        for (name, index) in [
+            ("skriptStructure", super::STRUCTURE),
+            ("skriptType", super::TYPE),
+            ("function", super::FUNCTION),
+        ] {
+            assert_eq!(
+                super::TOKEN_TYPES[index as usize],
+                name,
+                "TOKEN_TYPES[{index}] should be {name}"
+            );
+        }
+    }
+
     use super::*;
     use skript_docs::{fallback_docs, Catalog};
 

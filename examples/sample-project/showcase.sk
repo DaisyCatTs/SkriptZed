@@ -63,7 +63,6 @@ local function internal_helper() returns boolean:
 	# another file must NOT find it, and neither must rename.
 	return true
 
-
 # ------------------------------------------------------------------ commands
 #
 # Fold this and the whole command collapses to one line. In the outline the

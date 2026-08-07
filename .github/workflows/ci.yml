@@ -61,6 +61,11 @@ jobs:
         working-directory: tree-sitter-skript
         run: ./node_modules/.bin/tree-sitter parse --quiet --stat ../examples/sample-project/*.sk
 
+      # A capture with no theme fallback root renders as plain text — silently,
+      # in every theme that has not heard of it. Nothing else catches that.
+      - name: Check every capture resolves in an arbitrary theme
+        run: node scripts/check-theme-portability.mjs
+
   language-server:
     name: Language server
     runs-on: ubuntu-latest

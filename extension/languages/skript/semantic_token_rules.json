@@ -22,7 +22,6 @@
   { "token_type": "skriptSection", "style": ["keyword.repeat", "keyword"] },
   { "token_type": "skriptStructure", "style": ["keyword"] },
   { "token_type": "skriptType", "style": ["type"] },
-  { "token_type": "skriptEventValue", "style": ["variable.builtin", "variable"] },
 
   // ---- standard LSP token types --------------------------------------------
   { "token_type": "function", "token_modifiers": ["defaultLibrary"], "style": ["function.builtin", "function"] },

@@ -15,6 +15,14 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ### Fixed
 
+- **Core Skript syntax is no longer mistaken for an addon's.** Ranking scored
+  what a pattern *demanded* rather than what it *explained*, so a pattern whose
+  words were mandatory beat one whose words were optional even when both matched
+  the same line identically. On a server running BungeeSK, `send "hi" to player`
+  was documented as BungeeSK's "Send bungee player to server" instead of core
+  Skript's Message effect. Classification accuracy against Skript's own examples
+  rose from 96.9% to 99.4%.
+
 - **`on right click` and `on left click` are recognised again.** Skript accepts
   a separator as a space, a hyphen or nothing, so all of `right click`,
   `right-click` and `rightclick` are the same event — but only the last two were

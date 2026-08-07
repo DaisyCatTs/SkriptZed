@@ -50,6 +50,12 @@ struct State {
     detection: Detection,
     encoding: Encoding,
     diagnostics: diagnostics::Options,
+    /// URIs the editor has actually opened.
+    ///
+    /// `workspace` also holds every `.sk` found on disk, so it cannot answer
+    /// this: republishing over it would push diagnostics for several hundred
+    /// files nobody is looking at.
+    open_in_editor: std::collections::HashSet<String>,
 }
 
 impl Default for State {
@@ -57,6 +63,7 @@ impl Default for State {
         Self {
             workspace: Workspace::new(),
             catalog: None,
+            open_in_editor: std::collections::HashSet::new(),
             uninstalled: None,
             detection: Detection::default(),
             encoding: Encoding::Utf16,
@@ -181,6 +188,9 @@ impl LanguageServer for Backend {
             state.diagnostics = diagnostics::Options {
                 unknown_syntax: settings.unknown_syntax_diagnostics,
                 deprecated_syntax: settings.deprecated_syntax_diagnostics,
+                // Not a setting — reapplying configuration must not make the
+                // server forget it has already read the project.
+                project_indexed: state.diagnostics.project_indexed,
             };
         }
 
@@ -239,7 +249,11 @@ impl LanguageServer for Backend {
         // Index every script in the project, not only the files that happen to
         // be open. Without this, go-to-definition and find-references silently
         // miss most of a real script folder.
-        if !roots.is_empty() {
+        if roots.is_empty() {
+            // Single-file mode: there is no folder to read, so nothing will
+            // ever arrive to change the answer and the check is valid now.
+            self.state.write().await.diagnostics.project_indexed = true;
+        } else {
             let state = self.state.clone();
             let client = self.client.clone();
             tokio::spawn(async move {
@@ -264,6 +278,7 @@ impl LanguageServer for Backend {
                 let count = scripts.len();
                 {
                     let mut state = state.write().await;
+                    state.diagnostics.project_indexed = true;
                     for (uri, text) in scripts {
                         // An open document is authoritative - it may carry
                         // unsaved edits the file on disk does not.
@@ -275,6 +290,16 @@ impl LanguageServer for Backend {
                 client
                     .log_message(MessageType::INFO, format!("indexed {count} script(s)"))
                     .await;
+
+                // An editor opens its buffer the instant the server starts,
+                // long before several hundred files have been read off disk.
+                // Diagnostics published in that window cannot see a function
+                // declared in a file nobody has opened, so the first thing a
+                // user saw on opening a real project was a false
+                // "No function named `x` is declared in this project" — which
+                // then stayed until they edited the file, because nothing
+                // republished afterwards.
+                Backend { client, state }.republish_open().await;
             });
         }
 
@@ -418,6 +443,9 @@ impl LanguageServer for Backend {
             state.diagnostics = diagnostics::Options {
                 unknown_syntax: settings.unknown_syntax_diagnostics,
                 deprecated_syntax: settings.deprecated_syntax_diagnostics,
+                // Not a setting — reapplying configuration must not make the
+                // server forget it has already read the project.
+                project_indexed: state.diagnostics.project_indexed,
             };
         }
 
@@ -430,11 +458,11 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        self.state
-            .write()
-            .await
-            .workspace
-            .open(uri.clone(), params.text_document.text);
+        {
+            let mut state = self.state.write().await;
+            state.workspace.open(uri.clone(), params.text_document.text);
+            state.open_in_editor.insert(uri.clone());
+        }
         self.publish(&uri).await;
     }
 
@@ -1524,11 +1552,7 @@ impl Backend {
     async fn republish_open(&self) {
         let uris: Vec<String> = {
             let state = self.state.read().await;
-            state
-                .workspace
-                .documents()
-                .map(|document| document.uri().to_string())
-                .collect()
+            state.open_in_editor.iter().cloned().collect()
         };
         for uri in uris {
             self.publish(&uri).await;

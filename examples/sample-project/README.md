@@ -80,3 +80,18 @@ node scripts/coverage.mjs examples/sample-project/showcase.sk
 
 Reports how much of a file the grammar and the language server each explain, and
 lists any line neither could. On `showcase.sk` both numbers should be 100%.
+
+## Seeing the addon syntax work
+
+`addons.sk` stays plain unless the server can see the addons installed — that
+silence is deliberate, not a bug. If you do not run a server with all seven,
+generate a throwaway one:
+
+```sh
+node scripts/make-test-server.mjs
+```
+
+It writes stub JARs carrying only a manifest, which is all the detector reads,
+and prints the `serverPath` to paste into your settings. Restart the language
+server and every line in `addons.sk` hovers, colours and completes. The
+generated directory is gitignored and rebuilt in a second.

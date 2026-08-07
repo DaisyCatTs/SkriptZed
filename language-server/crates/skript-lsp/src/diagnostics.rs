@@ -50,6 +50,14 @@ pub struct Options {
     pub unknown_syntax: bool,
     /// Report syntax upstream has marked deprecated.
     pub deprecated_syntax: bool,
+    /// Whether the project index has finished reading the folder.
+    ///
+    /// Not a user setting. "This function does not exist" is only true once
+    /// every script has been looked at, and an editor opens its buffer long
+    /// before that — so until this is set, the check is skipped rather than
+    /// answered wrongly. Claiming a function is missing and taking it back a
+    /// second later is worse than saying nothing for a second.
+    pub project_indexed: bool,
 }
 
 impl Default for Options {
@@ -57,6 +65,7 @@ impl Default for Options {
         Self {
             unknown_syntax: false,
             deprecated_syntax: true,
+            project_indexed: false,
         }
     }
 }
@@ -77,7 +86,9 @@ pub fn check(
     check_indentation(document, &mut out);
     check_block_comments(document, &mut out);
     check_duplicate_declarations(document, &mut out);
-    check_unknown_functions(document, workspace, &mut out);
+    if options.project_indexed {
+        check_unknown_functions(document, workspace, &mut out);
+    }
 
     if let Some(catalog) = catalog {
         check_catalog(document, catalog, uninstalled, options, &mut out);
@@ -436,7 +447,19 @@ mod tests {
         // because nothing mutates during the check.
         let snapshot = Workspace::new();
         let _ = &snapshot;
-        check(document, &workspace, None, None, Options::default())
+        check(
+            document,
+            &workspace,
+            None,
+            None,
+            // The workspace here *is* the whole project, and it is fully built
+            // before the check runs — the startup race this flag guards against
+            // cannot happen in a unit test.
+            Options {
+                project_indexed: true,
+                ..Options::default()
+            },
+        )
     }
 
     fn codes(source: &str) -> Vec<&'static str> {

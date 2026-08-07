@@ -27,6 +27,20 @@ pub struct Diagnostic {
     pub severity: Severity,
     pub message: String,
     pub code: &'static str,
+    /// Other places worth looking at to understand this diagnostic.
+    ///
+    /// For a duplicate declaration the fix is almost never "edit this line" —
+    /// it is "go and look at the other one". A client renders these as
+    /// clickable links, so the range has to be somewhere useful, not a
+    /// restatement of `range`.
+    pub related: Vec<Related>,
+}
+
+/// A second location a diagnostic refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Related {
+    pub range: Range,
+    pub message: String,
 }
 
 /// What the user has switched on.
@@ -115,6 +129,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                           within a single indent."
                     .into(),
                 code: "mixed-indentation",
+                related: Vec::new(),
             });
             continue;
         }
@@ -142,6 +157,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                             },
                         ),
                         code: "inconsistent-indentation",
+                        related: Vec::new(),
                     });
                 } else if indent_len % unit.len() != 0 {
                     out.push(Diagnostic {
@@ -153,6 +169,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                             unit.len()
                         ),
                         code: "indent-not-a-multiple",
+                        related: Vec::new(),
                     });
                 }
             }
@@ -180,12 +197,13 @@ fn check_block_comments(document: &Document, out: &mut Vec<Diagnostic>) {
             severity: Severity::Error,
             message: "This block comment is never closed. Add a line containing only `###`.".into(),
             code: "unclosed-block-comment",
+            related: Vec::new(),
         });
     }
 }
 
 fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) {
-    let mut seen: Vec<(SymbolKind, String)> = Vec::new();
+    let mut seen: Vec<((SymbolKind, String), Range)> = Vec::new();
 
     for symbol in document.symbols().flat() {
         if !matches!(
@@ -198,7 +216,7 @@ fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) 
             continue;
         }
         let key = (symbol.kind, symbol.name.clone());
-        if seen.contains(&key) {
+        if let Some((_, first)) = seen.iter().find(|(other, _)| *other == key) {
             out.push(Diagnostic {
                 range: symbol.selection_range,
                 severity: Severity::Error,
@@ -207,9 +225,13 @@ fn check_duplicate_declarations(document: &Document, out: &mut Vec<Diagnostic>) 
                     symbol.name
                 ),
                 code: "duplicate-declaration",
+                related: vec![Related {
+                    range: *first,
+                    message: format!("`{}` is first declared here.", symbol.name),
+                }],
             });
         } else {
-            seen.push(key);
+            seen.push((key, symbol.selection_range));
         }
     }
 }
@@ -246,6 +268,7 @@ fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut
                     reference.name
                 ),
                 code: "unknown-function",
+                related: Vec::new(),
             });
         }
     }
@@ -350,6 +373,7 @@ fn check_catalog(
                         severity: Severity::Warning,
                         message,
                         code: "deprecated-syntax",
+                        related: Vec::new(),
                     });
                 }
             }
@@ -372,6 +396,7 @@ fn check_catalog(
                              this server."
                         ),
                         code: "requires-addon",
+                        related: Vec::new(),
                     });
                 } else if options.unknown_syntax {
                     out.push(Diagnostic {
@@ -381,6 +406,7 @@ fn check_catalog(
                                   addon, add it to your server or list it in `addons`."
                             .into(),
                         code: "unknown-syntax",
+                        related: Vec::new(),
                     });
                 }
             }
@@ -454,6 +480,24 @@ mod tests {
     fn reports_duplicate_functions_and_commands() {
         let found = codes("function a():\n\tstop\n\nfunction a():\n\tstop\n");
         assert!(found.contains(&"duplicate-declaration"));
+    }
+
+    #[test]
+    fn a_duplicate_points_at_the_first_declaration() {
+        let source = "function a():\n\tstop\n\nfunction a():\n\tstop\n";
+        let duplicate = check_source(source)
+            .into_iter()
+            .find(|d| d.code == "duplicate-declaration")
+            .expect("the duplicate is reported");
+
+        let related = duplicate
+            .related
+            .first()
+            .expect("it says where the first one is");
+        // Line 3, not line 0: the report sits on the second declaration and the
+        // link goes back to the first, which is the one the user has to look at.
+        assert_eq!(duplicate.range.start.line, 3);
+        assert_eq!(related.range.start.line, 0);
     }
 
     #[test]

@@ -298,6 +298,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 })),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 signature_help_provider: Some(SignatureHelpOptions {
@@ -1082,6 +1083,108 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(items)))
     }
 
+    /// Quick fixes for the diagnostics the client hands back.
+    ///
+    /// No `data` round-trip is needed: `CodeActionParams` returns each
+    /// diagnostic with its `range` and `code` intact, which is everything these
+    /// fixes require.
+    async fn code_action(&self, params: CodeActionParams) -> RpcResult<Option<CodeActionResponse>> {
+        let state = self.state.read().await;
+        let uri = params.text_document.uri.clone();
+        let Some(document) = state.workspace.get(uri.as_ref()) else {
+            return Ok(None);
+        };
+
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+        let mut offered_indent_fix = false;
+        let line_count = document.text().lines().count() as u32;
+        let end_of_file = Range::new(Position::new(line_count, 0), Position::new(line_count, 0));
+
+        for diagnostic in &params.context.diagnostics {
+            let Some(NumberOrString::String(code)) = &diagnostic.code else {
+                continue;
+            };
+
+            match code.as_str() {
+                // All three indentation codes share one real fix, and the
+                // formatter already knows how to produce it. One action rather
+                // than three, offered once however many lines are flagged.
+                "mixed-indentation" | "inconsistent-indentation" | "indent-not-a-multiple"
+                    if !offered_indent_fix =>
+                {
+                    offered_indent_fix = true;
+                    if let Some(formatted) =
+                        skript_format::format(document, skript_format::Options::default())
+                    {
+                        actions.push(quick_fix(
+                            "Fix indentation in this file",
+                            uri.clone(),
+                            vec![TextEdit {
+                                range: Range::new(
+                                    Position::new(0, 0),
+                                    Position::new(line_count, 0),
+                                ),
+                                new_text: formatted,
+                            }],
+                            diagnostic.clone(),
+                        ));
+                    }
+                }
+
+                "unclosed-block-comment" => actions.push(quick_fix(
+                    "Close the block comment",
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: end_of_file,
+                        new_text: "###\n".into(),
+                    }],
+                    diagnostic.clone(),
+                )),
+
+                "unknown-function" => {
+                    let name = document
+                        .symbols()
+                        .references
+                        .iter()
+                        .find(|reference| {
+                            reference.kind == SymbolKind::Function
+                                && reference.range.start.line == diagnostic.range.start.line
+                        })
+                        .map(|reference| reference.name.clone());
+                    let Some(name) = name else { continue };
+
+                    // A near-miss first: accepting a typo correction is far more
+                    // often what was meant than declaring a new function.
+                    if let Some(suggestion) = closest_function(&state.workspace, &name) {
+                        actions.push(quick_fix(
+                            &format!("Change to `{suggestion}`"),
+                            uri.clone(),
+                            vec![TextEdit {
+                                range: diagnostic.range,
+                                new_text: suggestion,
+                            }],
+                            diagnostic.clone(),
+                        ));
+                    }
+
+                    actions.push(quick_fix(
+                        &format!("Create function `{name}`"),
+                        uri.clone(),
+                        vec![TextEdit {
+                            range: end_of_file,
+                            new_text: format!("\nfunction {name}():\n\treturn\n"),
+                        }],
+                        diagnostic.clone(),
+                    ));
+                }
+
+                _ => {}
+            }
+        }
+
+        Ok((!actions.is_empty()).then_some(actions))
+    }
+
     async fn formatting(
         &self,
         params: DocumentFormattingParams,
@@ -1431,6 +1534,69 @@ fn in_command_entry_position(document: &skript_index::Document, line: u32) -> bo
         return !inside_body;
     }
     false
+}
+
+/// Builds a quick-fix action carrying one file's edits.
+fn quick_fix(
+    title: &str,
+    uri: Url,
+    edits: Vec<TextEdit>,
+    diagnostic: Diagnostic,
+) -> CodeActionOrCommand {
+    let mut changes = std::collections::HashMap::new();
+    changes.insert(uri, edits);
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: title.to_string(),
+        kind: Some(CodeActionKind::QUICKFIX),
+        diagnostics: Some(vec![diagnostic]),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
+}
+
+/// The declared function whose name is nearest `name`, when one is near enough
+/// to be worth offering.
+///
+/// The threshold scales with length, so a three-letter name matches nothing and
+/// a long one tolerates a couple of typos. Suggesting a wildly different name is
+/// worse than suggesting none.
+fn closest_function(workspace: &Workspace, name: &str) -> Option<String> {
+    let limit = (name.len() / 3).clamp(1, 3);
+    let mut best: Option<(usize, String)> = None;
+
+    for document in workspace.documents() {
+        for symbol in document.symbols().flat() {
+            if !symbol.kind.is_function() || symbol.name == name {
+                continue;
+            }
+            let distance = edit_distance(name, &symbol.name);
+            if distance <= limit && best.as_ref().is_none_or(|(closest, _)| distance < *closest) {
+                best = Some((distance, symbol.name.clone()));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+}
+
+/// Levenshtein distance, kept to two rows.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+
+    for (i, left) in a.iter().enumerate() {
+        current[0] = i + 1;
+        for (j, right) in b.iter().enumerate() {
+            let substitution = previous[j] + usize::from(left != right);
+            current[j + 1] = substitution.min(previous[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[b.len()]
 }
 
 /// The renameable symbol under the cursor, and which trigger a local belongs to.
@@ -2112,5 +2278,46 @@ mod completion_findability {
     #[test]
     fn a_pattern_with_no_literals_still_yields_the_name() {
         assert_eq!(filter_text_for("Entities", "%*entity types%"), "Entities");
+    }
+}
+
+#[cfg(test)]
+mod code_action_helpers {
+    use super::{closest_function, edit_distance};
+    use skript_index::Workspace;
+
+    #[test]
+    fn edit_distance_is_the_usual_one() {
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("same", "same"), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+    }
+
+    #[test]
+    fn a_typo_is_suggested_but_an_unrelated_name_is_not() {
+        let mut workspace = Workspace::new();
+        workspace.open(
+            "file:///t.sk",
+            "function giveKit(p: player):\n\treturn\n\nfunction teleportHome(p: player):\n\treturn\n",
+        );
+
+        // One transposed letter — worth offering.
+        assert_eq!(
+            closest_function(&workspace, "giveKti"),
+            Some("giveKit".to_string())
+        );
+
+        // Nothing like either. Suggesting a wildly different name is worse than
+        // suggesting none, so the threshold scales with length.
+        assert_eq!(closest_function(&workspace, "payout"), None);
+    }
+
+    #[test]
+    fn a_short_name_does_not_match_everything() {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", "function ab(p: player):\n\treturn\n");
+        // `xy` is two edits from `ab`, which for a two-letter name is the whole
+        // word; the limit is 1 so nothing is offered.
+        assert_eq!(closest_function(&workspace, "xy"), None);
     }
 }

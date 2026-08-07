@@ -170,7 +170,7 @@ fn structure_symbol(node: Node<'_>, source: &str, out: &mut FileSymbols) -> Opti
                 detail: function_signature(node, source),
                 range: node.into(),
                 selection_range: name_node.into(),
-                children: Vec::new(),
+                children: parameters(node, source),
             })
         }
 
@@ -272,6 +272,41 @@ fn command_arguments(node: Node<'_>, source: &str) -> String {
 }
 
 /// Nested sections inside a body, so the outline mirrors the file.
+/// A function's parameters, as local variables scoped to its body.
+///
+/// They are `{_name}` inside the body, so they are the same kind as any other
+/// trigger-local. Without them, renaming `{_name}` rewrote every use in the body
+/// and left the signature untouched — producing a function that still parses,
+/// still runs, and silently does nothing. Go-to-definition on a parameter also
+/// had nowhere to go.
+///
+/// The grammar already names the fields, so there is nothing to parse here.
+fn parameters(node: Node<'_>, source: &str) -> Vec<Symbol> {
+    let Some(list) = node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut cursor = list.walk();
+    for child in list.children(&mut cursor) {
+        if child.kind() != "parameter" {
+            continue;
+        }
+        let Some(name) = child.child_by_field_name("name") else {
+            continue;
+        };
+        out.push(Symbol {
+            kind: SymbolKind::LocalVariable,
+            name: text_of(name, source),
+            detail: field_text(child, "type", source).unwrap_or_default(),
+            range: child.into(),
+            selection_range: name.into(),
+            children: Vec::new(),
+        });
+    }
+    out
+}
+
 fn body_sections(node: Node<'_>, source: &str) -> Vec<Symbol> {
     let Some(body) = node.child_by_field_name("body") else {
         return Vec::new();
@@ -612,5 +647,78 @@ mod review_regressions {
             .declaration_at(on_header)
             .expect("header should resolve");
         assert_eq!(found.kind, SymbolKind::Section);
+    }
+}
+
+#[cfg(test)]
+mod parameter_symbols {
+    use super::*;
+
+    fn symbols(source: &str) -> FileSymbols {
+        crate::Document::new("file:///test.sk", source)
+            .symbols()
+            .clone()
+    }
+
+    /// Renaming a parameter must be able to reach the signature.
+    ///
+    /// Before parameters were symbols, `{_who}` in the body was a reference with
+    /// no declaration, so a rename rewrote the body and left `who: player` in
+    /// the signature — a function that still parses, still runs, and silently
+    /// does nothing. That is a language server damaging correct code, which is
+    /// worse than a missing feature.
+    #[test]
+    fn a_function_declares_its_parameters() {
+        let file = symbols(
+            "function greet(who: player, amount: number = 1) :: text:\n\treturn \"hi %{_who}%\"\n",
+        );
+
+        let function = file
+            .symbols
+            .iter()
+            .find(|symbol| symbol.kind.is_function())
+            .expect("the function is a symbol");
+
+        let names: Vec<&str> = function
+            .children
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["who", "amount"]);
+
+        for child in &function.children {
+            assert_eq!(child.kind, SymbolKind::LocalVariable);
+        }
+
+        // The type comes along, so hover and signature help can use it without
+        // scraping the rendered signature string.
+        assert_eq!(function.children[0].detail.trim(), "player");
+        assert_eq!(function.children[1].detail.trim(), "number");
+    }
+
+    #[test]
+    fn the_selection_range_covers_only_the_name() {
+        // A rename edits `selection_range`. If it covered `who: player`, the
+        // rename would eat the type.
+        let source = "function f(who: player):\n\treturn\n";
+        let file = symbols(source);
+        let parameter = &file
+            .symbols
+            .iter()
+            .find(|s| s.kind.is_function())
+            .unwrap()
+            .children[0];
+
+        let line = source.lines().next().unwrap();
+        let start = parameter.selection_range.start.character as usize;
+        let end = parameter.selection_range.end.character as usize;
+        assert_eq!(&line[start..end], "who");
+    }
+
+    #[test]
+    fn a_function_without_parameters_has_no_children() {
+        let file = symbols("function tick():\n\treturn\n");
+        let function = file.symbols.iter().find(|s| s.kind.is_function()).unwrap();
+        assert!(function.children.is_empty());
     }
 }

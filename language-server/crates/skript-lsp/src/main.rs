@@ -738,7 +738,13 @@ impl LanguageServer for Backend {
             else {
                 continue;
             };
-            let names = parameter_names(&symbol.detail);
+            // The declaration's own parameter symbols, rather than re-parsing
+            // the rendered signature string.
+            let names: Vec<String> = symbol
+                .children
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect();
             if names.is_empty() {
                 continue;
             }
@@ -1218,75 +1224,6 @@ fn kinds_alike(wanted: SymbolKind, found: SymbolKind) -> bool {
         return wanted == found;
     }
     wanted == found
-}
-
-/// Parameter names out of a function's rendered signature.
-///
-/// The index stores the signature as text — `(who: player, amount: number = 1)
-/// :: text` — because Skript has no type model worth building one for. Reading
-/// the names back out is cheaper than threading a structured parameter list
-/// through the whole index for this one feature.
-fn parameter_names(detail: &str) -> Vec<String> {
-    let Some(open) = detail.find('(') else {
-        return Vec::new();
-    };
-    // The *matching* close paren, not the first one: a parenthesised default
-    // such as `xs: integers = (1, 7)` closes before the parameter list does, and
-    // stopping there silently truncated every parameter after it.
-    let mut depth = 0usize;
-    let mut close = None;
-    for (offset, ch) in detail[open..].char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(open + offset);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let Some(close) = close else {
-        return Vec::new();
-    };
-    let inside = &detail[open + 1..close];
-
-    let mut names = Vec::new();
-    let mut depth = 0usize;
-    let mut current = String::new();
-    for ch in inside.chars() {
-        match ch {
-            '(' => {
-                depth += 1;
-                current.push(ch);
-            }
-            ')' => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            // Only a top-level comma separates parameters; one inside a
-            // parenthesised default such as `= (1, 7)` does not.
-            ',' if depth == 0 => {
-                names.push(std::mem::take(&mut current));
-            }
-            _ => current.push(ch),
-        }
-    }
-    names.push(current);
-
-    names
-        .into_iter()
-        .map(|part| {
-            part.split(':')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_string()
-        })
-        .filter(|name| !name.is_empty())
-        .collect()
 }
 
 /// Byte columns at which each argument of a call starts.
@@ -1929,26 +1866,7 @@ mod tests {
 
 #[cfg(test)]
 mod inlay_hint_helpers {
-    use super::{argument_offsets, parameter_names};
-
-    #[test]
-    fn parameter_names_come_out_of_a_rendered_signature() {
-        assert_eq!(
-            parameter_names("(who: player, amount: number = 1) :: text"),
-            vec!["who", "amount"]
-        );
-        assert_eq!(parameter_names("() :: boolean"), Vec::<String>::new());
-        assert_eq!(parameter_names("no parens at all"), Vec::<String>::new());
-    }
-
-    #[test]
-    fn a_comma_inside_a_parenthesised_default_is_not_a_separator() {
-        // `(xs: integers = (1, 7), flag: boolean)` is two parameters, not three.
-        assert_eq!(
-            parameter_names("(xs: integers = (1, 7), flag: boolean)"),
-            vec!["xs", "flag"]
-        );
-    }
+    use super::argument_offsets;
 
     #[test]
     fn argument_offsets_point_at_each_argument() {

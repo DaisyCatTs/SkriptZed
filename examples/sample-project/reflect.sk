@@ -1,0 +1,246 @@
+# ======================================
+# Imports
+# ======================================
+
+import:
+    java.util.*
+    java.util.concurrent.*
+    java.util.function.*
+    java.util.stream.*
+    java.io.*
+    java.net.*
+    java.time.*
+    java.math.*
+    org.bukkit.*
+    org.bukkit.entity.*
+    org.bukkit.inventory.*
+    org.bukkit.inventory.meta.*
+    org.bukkit.event.*
+    org.bukkit.event.player.*
+    org.bukkit.event.block.*
+    org.bukkit.persistence.*
+    net.kyori.adventure.text.*
+    net.kyori.adventure.text.format.*
+
+# ======================================
+# Options
+# ======================================
+
+options:
+    prefix: &b[Test]
+    max: 100
+    debug: true
+    version: 1.0
+
+# ======================================
+# Variables
+# ======================================
+
+variables:
+    {test::*} = "one", "two", "three"
+    {map::*}
+    {player.data::*}
+    {cooldown::*}
+    {nested::example::1} = true
+
+# ======================================
+# Functions
+# ======================================
+
+function add(a: number, b: number) :: number:
+    return {_a} + {_b}
+
+function greet(p: player):
+    send "&aHello %name of {_p}%"
+
+function factorial(n: number) :: number:
+    if {_n} <= 1:
+        return 1
+    return {_n} * factorial({_n} - 1)
+
+# ======================================
+# Commands
+# ======================================
+
+command /test:
+    permission: test.use
+    permission message: &cNo.
+    cooldown: 5 seconds
+    cooldown message: Wait.
+    aliases: t, testing
+    trigger:
+
+        send "{@prefix}"
+
+        set {_list::*} to 1,2,3,4,5
+
+        loop {_list::*}:
+            send "%loop-value%"
+
+        loop all players:
+            send "%loop-player%" to player
+
+        while player's health > 0:
+            stop loop
+
+        set {_random} to random integer between 1 and 100
+
+        switch {_random}:
+            case 1:
+                send "one"
+            case 2:
+                send "two"
+            default:
+                send "other"
+
+        if {_random} > 50:
+            broadcast "High"
+        else:
+            broadcast "Low"
+
+# ======================================
+# Events
+# ======================================
+
+on join:
+    send "Welcome"
+
+on quit:
+    broadcast "%player% left"
+
+on damage:
+    if victim is player:
+        cancel event
+
+on break:
+    if event-block is diamond ore:
+        drop diamond
+
+on chat:
+    cancel event
+
+every 5 seconds:
+    loop all players:
+        heal loop-player
+
+# ======================================
+# Skript-reflect
+# ======================================
+
+command /reflect:
+    trigger:
+
+        set {_map} to new HashMap()
+        {_map}.put("hello", "world")
+
+        set {_list} to new ArrayList()
+        {_list}.add("abc")
+        {_list}.add("def")
+
+        set {_future} to CompletableFuture.completedFuture("done")
+
+        set {_uuid} to UUID.randomUUID()
+
+        set {_date} to LocalDate.now()
+
+        set {_builder} to Component.text("Hello")
+        {_builder}.color(NamedTextColor.AQUA)
+
+        set {_item} to new ItemStack(Material.DIAMOND)
+        set {_meta} to {_item}.getItemMeta()
+        {_meta}.setDisplayName("Diamond")
+        {_item}.setItemMeta({_meta})
+
+        Bukkit.broadcastMessage({_uuid}.toString())
+
+# ======================================
+# Lambdas
+# ======================================
+
+command /lambda:
+    trigger:
+        set {_list} to Arrays.asList("a","b","c")
+
+        {_list}.forEach({x} -> Bukkit.broadcastMessage({x}))
+
+# ======================================
+# Streams
+# ======================================
+
+command /stream:
+    trigger:
+        set {_numbers} to Arrays.asList(1,2,3,4,5)
+
+        {_numbers}.stream()
+            .filter({x} -> {x} > 2)
+            .map({x} -> {x} * 2)
+            .forEach({x} -> Bukkit.broadcastMessage("" + {x}))
+
+# ======================================
+# Enums
+# ======================================
+
+command /enum:
+    trigger:
+        set {_material} to Material.DIAMOND
+        send "%{_material}.name()%"
+
+# ======================================
+# PersistentDataContainer
+# ======================================
+
+command /pdc:
+    trigger:
+        set {_item} to player's tool
+        set {_meta} to {_item}.getItemMeta()
+
+        set {_key} to new NamespacedKey(server.getPluginManager().getPlugin("Skript"), "test")
+
+        {_meta}.getPersistentDataContainer().set({_key}, PersistentDataType.STRING, "hello")
+
+        {_item}.setItemMeta({_meta})
+
+# ======================================
+# Collections
+# ======================================
+
+command /collections:
+    trigger:
+        set {_set} to new HashSet()
+        {_set}.add("hello")
+
+        set {_queue} to new LinkedList()
+        {_queue}.offer("abc")
+
+        set {_stack} to new Stack()
+        {_stack}.push("value")
+
+# ======================================
+# Generics
+# ======================================
+
+command /generic:
+    trigger:
+        set {_map} to new HashMap()
+        {_map}.put(UUID.randomUUID(), LocalDate.now())
+
+# ======================================
+# Math
+# ======================================
+
+command /math:
+    trigger:
+        set {_big} to new BigDecimal("123456.789")
+        send "%{_big}.multiply(new BigDecimal(""2""))%"
+
+# ======================================
+# Scheduler
+# ======================================
+
+command /later:
+    trigger:
+        Bukkit.getScheduler().runTaskLater(
+            server.getPluginManager().getPlugin("Skript"),
+            () -> player.sendMessage("Later"),
+            20L
+        )

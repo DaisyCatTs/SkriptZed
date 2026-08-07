@@ -87,7 +87,7 @@ pub fn check(
     check_block_comments(document, &mut out);
     check_duplicate_declarations(document, &mut out);
     if options.project_indexed {
-        check_unknown_functions(document, workspace, &mut out);
+        check_unknown_functions(document, workspace, catalog, &mut out);
     }
 
     if let Some(catalog) = catalog {
@@ -103,7 +103,8 @@ pub fn check(
     out
 }
 
-/// Skript infers one indent unit per file from the first indented line, forbids
+/// Skript infers one indent unit per **top-level structure** from that
+/// structure's first indented line, forbids
 /// mixing tabs and spaces inside a single indent, and requires every deeper
 /// line to be an exact multiple of that unit. The grammar is deliberately
 /// lenient about this so a half-typed file still parses; the strictness lives
@@ -122,8 +123,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
             continue;
         }
 
-        let indent_len = line.len() - line.trim_start().len();
-        if indent_len == 0 || line.trim().is_empty() {
+        if line.trim().is_empty() {
             continue;
         }
         // A comment line's indentation is not the script's indentation. Skript
@@ -137,6 +137,20 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
         // `###` prose is already skipped above for the same reason; ordinary
         // `#` lines were missed.
         if line.trim_start().starts_with('#') {
+            continue;
+        }
+
+        let indent_len = line.len() - line.trim_start().len();
+        if indent_len == 0 {
+            // A new top-level structure begins, and Skript infers the indent
+            // unit **per structure**, not per file — reported as issue #2 by
+            // someone whose 99 working scripts we were flagging.
+            //
+            // Skript's own test suite settles it: 7 of its 540 shipped scripts
+            // mix tab- and space-indentation between structures, and every one
+            // of them is consistent *within* each structure. Those files load,
+            // so a per-file rule is stricter than the language.
+            unit = None;
             continue;
         }
         let indent = &line[..indent_len];
@@ -167,8 +181,9 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                         range,
                         severity: Severity::Error,
                         message: format!(
-                            "Indentation uses {} here but {} earlier in the file. Skript infers \
-                             one indent unit per script.",
+                            "Indentation uses {} here but {} earlier in this structure. Skript \
+                             infers one indent unit per structure, so mixing between structures \
+                             is fine — mixing inside one is not.",
                             if indent.starts_with(' ') {
                                 "spaces"
                             } else {
@@ -272,11 +287,30 @@ fn preceded_by_new(document: &Document, reference: &skript_index::Reference) -> 
     before.trim_end().ends_with("new")
 }
 
-fn check_unknown_functions(document: &Document, workspace: &Workspace, out: &mut Vec<Diagnostic>) {
+fn check_unknown_functions(
+    document: &Document,
+    workspace: &Workspace,
+    catalog: Option<&Catalog>,
+    out: &mut Vec<Diagnostic>,
+) {
     // Gathered once. Calling `Workspace::definitions` per reference walked every
     // indexed document and rebuilt its whole symbol tree each time, so a file
     // with N calls cost N full-workspace scans on every keystroke.
     let mut declared: std::collections::HashSet<&str> = std::collections::HashSet::new();
+
+    // Skript ships 45 functions of its own — `floor`, `abs`, `mod`, `uuid` —
+    // registered at runtime and declared in no script. Checking only the
+    // workspace made every one of them an error, which is issue #3: calling
+    // `floor(2.8)` reported "No function named `floor` is declared in this
+    // project" on a line that is perfectly valid.
+    //
+    // Addon functions come through the same catalog, so a server running an
+    // addon that registers functions gets them too.
+    if let Some(catalog) = catalog {
+        for entry in catalog.docs().entries(skript_docs::Category::Function) {
+            declared.insert(entry.name.as_str());
+        }
+    }
     for other in workspace.documents() {
         let same_file = other.uri() == document.uri();
         for symbol in other.symbols().flat() {
@@ -517,10 +551,18 @@ mod tests {
         assert!(codes("on join:\n \tsend \"hi\"\n").contains(&"mixed-indentation"));
     }
 
+    /// This test used to assert the opposite, and it was wrong: it encoded a
+    /// per-file indent rule that Skript does not have. Issue #2 reported the
+    /// resulting false errors, and Skript's own test suite settles it — 7 of
+    /// its 540 shipped scripts switch indent character between structures.
+    /// Kept, inverted, so the mistake cannot be reintroduced.
     #[test]
-    fn rejects_switching_indent_character_mid_file() {
+    fn switching_indent_character_between_structures_is_allowed() {
         let found = codes("on join:\n\tsend \"a\"\non quit:\n    send \"b\"\n");
-        assert!(found.contains(&"inconsistent-indentation"));
+        assert!(
+            !found.contains(&"inconsistent-indentation"),
+            "Skript infers the unit per structure, got {found:?}"
+        );
     }
 
     #[test]
@@ -559,6 +601,40 @@ mod tests {
 ",
         );
         assert!(found.contains(&"inconsistent-indentation"));
+    }
+
+    /// Issue #2. Skript infers the indent unit per top-level structure, not per
+    /// file — 7 of the 540 scripts Skript itself ships mix tab and space
+    /// indentation between structures, and they all load. A per-file rule made
+    /// every one of them an error.
+    #[test]
+    fn each_structure_gets_its_own_indent_unit() {
+        let found = codes(
+            "on join:
+	send \"a\"
+
+on quit:
+    send \"b\"
+",
+        );
+        assert!(
+            !found.contains(&"inconsistent-indentation"),
+            "structures may differ from each other, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn mixing_inside_one_structure_is_still_an_error() {
+        let found = codes(
+            "on join:
+	send \"a\"
+    send \"b\"
+",
+        );
+        assert!(
+            found.contains(&"inconsistent-indentation"),
+            "one structure must pick a side, got {found:?}"
+        );
     }
 
     #[test]

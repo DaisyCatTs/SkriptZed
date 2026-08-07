@@ -306,7 +306,18 @@ impl LanguageServer for Backend {
                 }),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(true),
-                    trigger_characters: Some(vec!["{".into(), "@".into(), "%".into(), " ".into()]),
+                    // Deliberately **not** a space. Skript is written in prose,
+                    // so a space-triggered popup is open almost all the time —
+                    // and while it is open the editor gives Enter to the
+                    // completion instead of to the newline. Typing an ordinary
+                    // sentence then fights back, which is far worse than having
+                    // to ask for the list.
+                    //
+                    // These three each open something a plain word cannot
+                    // continue: a variable, an option reference, an
+                    // interpolation. Word characters still bring the list up on
+                    // their own through the editor's own behaviour.
+                    trigger_characters: Some(vec!["{".into(), "@".into(), "%".into()]),
                     ..Default::default()
                 }),
                 semantic_tokens_provider: Some(

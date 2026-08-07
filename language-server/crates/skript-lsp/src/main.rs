@@ -957,6 +957,14 @@ impl LanguageServer for Backend {
                         label: entry.name.clone(),
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some(detail),
+                        // The label is the documentation *title*; the user types
+                        // the *pattern*. Zed filters on the label alone, so
+                        // without this, typing `send` never surfaces the effect
+                        // filed under "Message" — and 60 of 139 effects are
+                        // unreachable by the very keyword they begin with.
+                        // Matching on both is the whole point of completion in a
+                        // language you write as prose.
+                        filter_text: Some(filter_text_for(&entry.name, pattern)),
                         sort_text: Some(format!("{rank}{}", entry.name)),
                         // Rendering every entry's Markdown card here meant
                         // thousands of documents rebuilt on each keystroke —
@@ -1463,6 +1471,58 @@ fn categories_for(prefix: &str) -> Vec<Category> {
     ]
 }
 
+/// What the client should match the user's typing against.
+///
+/// The entry name plus the pattern's literal words, so either finds the item:
+/// somebody who knows it as "Message" and somebody who just types `send` both
+/// get there. Slots and tab stops are stripped — nobody types `%objects%`.
+fn filter_text_for(name: &str, pattern: &str) -> String {
+    // Every alternative, not just the first. `snippet_for` picks one branch of
+    // `(message|send)` because it has to insert *something*; filtering wants the
+    // opposite — `send` must be matchable even though the snippet inserts
+    // `message`.
+    let mut text = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            // Slots and regex holes are not typed by anyone.
+            '%' => {
+                for next in chars.by_ref() {
+                    if next == '%' {
+                        break;
+                    }
+                }
+                text.push(' ');
+            }
+            '<' => {
+                for next in chars.by_ref() {
+                    if next == '>' {
+                        break;
+                    }
+                }
+                text.push(' ');
+            }
+            // Group and alternation syntax is structure, not text.
+            '(' | ')' | '[' | ']' | '|' => text.push(' '),
+            _ => text.push(ch),
+        }
+    }
+
+    let mut words: Vec<&str> = Vec::new();
+    for word in text.split_whitespace() {
+        if !words.contains(&word) {
+            words.push(word);
+        }
+    }
+
+    if words.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} {}", words.join(" "))
+    }
+}
+
 /// Turns a Skript pattern into an LSP snippet, with a tab stop per slot.
 fn snippet_for(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len());
@@ -1944,5 +2004,68 @@ mod entry_position_tests {
         // Outside the command entirely.
         assert!(!in_command_entry_position(document, 0), "the header itself");
         assert!(!in_command_entry_position(document, 7), "inside an event");
+    }
+}
+
+#[cfg(test)]
+mod completion_findability {
+    use super::filter_text_for;
+
+    /// Completion must be reachable by the word a user actually types.
+    ///
+    /// The label is Skript's documentation *title*, and Zed filters on the label
+    /// alone. Measured against the published database, 60 of 139 effects have
+    /// their pattern's leading keyword nowhere in their name — so typing `send`
+    /// did not surface "Message", and typing `make` did not surface "Consume
+    /// Brewing Fuel". For a language written as English prose that inverts the
+    /// point of completion.
+    #[test]
+    fn the_keyword_a_user_types_is_matchable() {
+        for (name, pattern, typed) in [
+            (
+                "Message",
+                "(message|send) [message[s]] %objects% [to %commandsenders%]",
+                "send",
+            ),
+            (
+                "Consume Brewing Fuel",
+                "make %blocks% [not] consume [the] fuel",
+                "make",
+            ),
+            (
+                "Apply Fishing Lure",
+                "(reel|pull) in [the] hook[ed] entity",
+                "reel",
+            ),
+            (
+                "Teleport",
+                "teleport %entities% (to|%direction%) %location%",
+                "teleport",
+            ),
+        ] {
+            let filter = filter_text_for(name, pattern).to_lowercase();
+            assert!(
+                filter.contains(typed),
+                "typing {typed:?} cannot reach {name:?}; filter text was {filter:?}"
+            );
+            // The name must still work for anybody who knows it.
+            assert!(
+                filter.contains(&name.to_lowercase()),
+                "{name:?} is no longer findable by its own name"
+            );
+        }
+    }
+
+    #[test]
+    fn slots_and_tab_stops_are_not_matchable_text() {
+        // Nobody types `%objects%` or `${1:...}`.
+        let filter = filter_text_for("Message", "(message|send) %objects% [to %commandsenders%]");
+        assert!(!filter.contains('%'), "a slot leaked in: {filter:?}");
+        assert!(!filter.contains('$'), "a tab stop leaked in: {filter:?}");
+    }
+
+    #[test]
+    fn a_pattern_with_no_literals_still_yields_the_name() {
+        assert_eq!(filter_text_for("Entities", "%*entity types%"), "Entities");
     }
 }

@@ -336,9 +336,86 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
+        // The project index was a one-shot startup snapshot. After a `git pull`
+        // that adds a script, calling its function gave a permanent red "no
+        // function named … is declared in this project" on correct code, with
+        // nothing to suggest that restarting the server would fix it.
+        //
+        // There is no static capability for this — it has to be registered
+        // dynamically, and a client that refuses simply keeps the old
+        // behaviour.
+        let watchers = vec![FileSystemWatcher {
+            glob_pattern: GlobPattern::String("**/*.sk".into()),
+            kind: None,
+        }];
+        let registration = Registration {
+            id: "skript-watch-scripts".into(),
+            method: "workspace/didChangeWatchedFiles".into(),
+            register_options: serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                watchers,
+            })
+            .ok(),
+        };
+        if let Err(error) = self.client.register_capability(vec![registration]).await {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("no file watching ({error}); scripts changed outside the editor will                              need a restart to be picked up"),
+                )
+                .await;
+        }
+
         self.client
             .log_message(MessageType::INFO, "skript-lsp ready")
             .await;
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        {
+            let mut state = self.state.write().await;
+            for change in &params.changes {
+                let uri = change.uri.to_string();
+                match change.typ {
+                    FileChangeType::DELETED => state.workspace.close(&uri),
+                    _ => {
+                        // Never clobber a buffer the editor is holding: the
+                        // version on disk may be older than what the user is
+                        // looking at.
+                        if state.workspace.get(&uri).is_some() {
+                            continue;
+                        }
+                        if let Ok(path) = change.uri.to_file_path() {
+                            if let Ok(text) = std::fs::read_to_string(path) {
+                                state.workspace.update(&uri, text);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // A new file can resolve an `unknown-function` in a file the user
+        // already has open, so every open document is rechecked.
+        self.republish_open().await;
+    }
+
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
+        // The extension forwards `lsp.skript-lsp.settings`, but the server only
+        // ever read `initialization_options` — so configuring the more
+        // idiomatic Zed location did nothing at all, silently.
+        let Ok(settings) = serde_json::from_value::<Settings>(params.settings.clone()) else {
+            return;
+        };
+
+        {
+            let mut state = self.state.write().await;
+            state.diagnostics = diagnostics::Options {
+                unknown_syntax: settings.unknown_syntax_diagnostics,
+                deprecated_syntax: settings.deprecated_syntax_diagnostics,
+            };
+        }
+
+        self.republish_open().await;
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
@@ -1158,6 +1235,25 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
+    /// Rechecks every indexed document.
+    ///
+    /// A file appearing or a setting changing can resolve — or create — a
+    /// diagnostic in a file the user already has open, so republishing only the
+    /// changed file would leave stale errors on screen.
+    async fn republish_open(&self) {
+        let uris: Vec<String> = {
+            let state = self.state.read().await;
+            state
+                .workspace
+                .documents()
+                .map(|document| document.uri().to_string())
+                .collect()
+        };
+        for uri in uris {
+            self.publish(&uri).await;
+        }
+    }
+
     async fn publish(&self, uri: &str) {
         let (found, encoding) = {
             let state = self.state.read().await;
@@ -1190,6 +1286,12 @@ impl Backend {
                     }),
                     code: Some(NumberOrString::String(diagnostic.code.to_string())),
                     source: Some("skript".into()),
+                    // Semantic tokens carry a `deprecated` modifier, but only on
+                    // the syntax's literal spans and only if the theme opts in.
+                    // The tag is the theme-independent path, and it is what
+                    // gives the line a strikethrough rather than just a colour.
+                    tags: (diagnostic.code == "deprecated-syntax")
+                        .then(|| vec![DiagnosticTag::DEPRECATED]),
                     message: diagnostic.message,
                     ..Default::default()
                 })

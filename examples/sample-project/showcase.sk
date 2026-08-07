@@ -9,8 +9,9 @@ where, so you can see each language-server feature working on real code.
   Hover              anything in a statement — `teleport`, `loop-player`,
                      `uuid of player` — for its description, syntax and
                      examples, straight from Skript's own database.
-  Go to definition   F12 on `greet(...)` on line 96, or on `{@prefix}`.
-                     It reaches `library.sk`, which you have not opened.
+  Go to definition   F12 on `greet(...)` or `format_points(...)` in the
+                     `on join:` block, or on `{@prefix}` anywhere. The second
+                     reaches `library.sk`, which you have not opened.
   Find references    on `greet` — every call across the project.
   Rename             F2 on `{_name}` inside a function. The signature is
                      renamed too, and a `{_name}` in a different trigger is
@@ -18,7 +19,7 @@ where, so you can see each language-server feature working on real code.
   Completion         start typing `send`, `teleport` or `loop` on a new
                      indented line. The pattern shows beside the name.
   Signature help     type `greet(` and it shows the parameters.
-  Inlay hints        the call on line 96 shows parameter names inline.
+  Inlay hints        both calls in `on join:` show parameter names inline.
   Outline            ⌘⇧O / Ctrl+Shift+O — commands nest their entries.
   Format             format the document; it re-indents from the parse tree
                      and refuses to touch a file that does not parse.
@@ -94,7 +95,7 @@ on join:
 	# F12 here reaches greet() above; the call also carries an inlay hint.
 	send greet(player's name) to player
 	# And this one is declared in library.sk, which is not open.
-	send shared_helper(player's name) to player
+	send format_points({stats::joins}) to player
 
 on first join:
 	broadcast "{@prefix} &e%player% joined for the first time!"

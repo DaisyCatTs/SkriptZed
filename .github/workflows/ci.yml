@@ -84,6 +84,18 @@ jobs:
           node scripts/fetch-docs.mjs
           node scripts/fetch-addons.mjs
 
+      # The `grammar` job clones this too, but that is a different runner.
+      # Without it here, `event_audit`'s corpus test — the guard against an
+      # event spelling silently falling through to the catch-all — returns
+      # green having checked nothing.
+      - name: Fetch the upstream script corpus
+        run: |
+          mkdir -p vendor
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/SkriptLang/Skript.git vendor/skript-corpus
+          cd vendor/skript-corpus
+          git sparse-checkout set src/test/skript src/main/resources/scripts
+
       - run: cargo fmt --all --check
         working-directory: language-server
       - run: cargo clippy --all-targets -- -D warnings
@@ -177,6 +189,21 @@ jobs:
 
       - run: cargo build --release -p skript-lsp --target ${{ matrix.target }}
         working-directory: language-server
+
+      # The gate jobs test a binary built for the runner. This tests the one
+      # about to be published — a different profile, a different target triple,
+      # and the only artefact any user ever runs. Skipped for the two targets
+      # this runner cannot execute.
+      - name: Smoke-test the binary being released
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        env:
+          SKRIPT_LSP_BINARY: language-server/target/${{ matrix.target }}/release/skript-lsp
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            export SKRIPT_LSP_BINARY="$SKRIPT_LSP_BINARY.exe"
+          fi
+          node scripts/smoke-lsp.mjs
 
       # The asset names here must match what extension/src/lib.rs looks for.
       - name: Package

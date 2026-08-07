@@ -127,7 +127,15 @@ impl<T> PatternIndex<T> {
         for index in self.candidates(line) {
             let entry = &self.entries[index];
             if let Some(matched) = matcher::match_pattern(&entry.pattern, line) {
-                results.push((entry.pattern.specificity(), &entry.value, matched));
+                // A `<regex>` consumes an unknown span, so coverage cannot be
+                // measured and the pattern falls back to its static score.
+                let coverage = if entry.pattern.has_regex() {
+                    0
+                } else {
+                    literal_coverage(line, &matched)
+                };
+                let score = coverage * 10 + entry.pattern.specificity();
+                results.push((score, &entry.value, matched));
             }
         }
 
@@ -140,6 +148,38 @@ impl<T> PatternIndex<T> {
     pub fn best_match(&self, line: &str) -> Option<(&T, Match)> {
         self.matches(line).into_iter().next()
     }
+}
+
+/// How much of the line the pattern pinned down with its own words.
+///
+/// [`Pattern::specificity`] scores the *pattern*, so a literal inside an
+/// optional counts for nothing. That reads the wrong way round when two
+/// patterns match the same line: core Skript writes
+/// `send %objects% [to %audiences%]` while BungeeSK writes
+/// `send %bungeeplayer% to %bungeeserver%`, and on `send "hi" to player` both
+/// consume exactly the words `send` and `to` — but only BungeeSK's are
+/// mandatory, so it scored 22 against core's 7 and won. Anyone running
+/// BungeeSK saw core Skript's Message effect documented as "Send bungee player
+/// to server".
+///
+/// Measuring the match instead makes those two equal, and an exact tie already
+/// resolves in core Skript's favour. Counts non-whitespace bytes outside the
+/// slot captures, so a pattern that explains more of the line ranks higher.
+fn literal_coverage(line: &str, matched: &matcher::Match) -> i32 {
+    let non_space = |text: &str| {
+        text.bytes()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .count()
+    };
+
+    let captured: usize = matched
+        .captures
+        .iter()
+        .filter_map(|capture| line.get(capture.start..capture.end))
+        .map(non_space)
+        .sum();
+
+    non_space(line).saturating_sub(captured) as i32
 }
 
 #[cfg(test)]

@@ -233,6 +233,7 @@ fn classification_accuracy_against_skripts_own_examples() {
     }
 
     let mut per: HashMap<&'static str, Tally> = HashMap::new();
+    let mut lost: Vec<(String, String, String)> = Vec::new();
     let mut confusion: HashMap<(String, String), (usize, String)> = HashMap::new();
     let mut self_match: HashMap<(Category, usize), bool> = HashMap::new();
 
@@ -258,7 +259,30 @@ fn classification_accuracy_against_skripts_own_examples() {
             tally.attributed += 1;
         }
 
+        // `if player's health > 4:` is filed upstream under the `Conditionals`
+        // section, but `classify_line` deliberately strips the `if`/`while`
+        // keyword and answers with the *condition* — because that is what hover
+        // should show. "This is an if statement" is not documentation; the
+        // Comparison entry's description and examples are. Scoring the intended
+        // answer as a failure made six of the twelve remaining stratum-B
+        // failures unfixable by construction, which is worse than useless in a
+        // gate: it invites someone to "fix" it by making hover less useful.
+        let wraps_a_condition = matches!(
+            expected_entry.name.as_str(),
+            "Conditionals" | "While Loop" | "Do If"
+        );
+
         match catalog.classify_line(&case.code, case.role) {
+            Some((got, _))
+                if wraps_a_condition
+                    && got.category == Category::Condition
+                    && case.role != LineRole::TopLevel =>
+            {
+                tally.hit += 1;
+                if present {
+                    tally.attributed_hit += 1;
+                }
+            }
             Some((got, _)) if got == expected => {
                 tally.hit += 1;
                 if present {
@@ -266,14 +290,23 @@ fn classification_accuracy_against_skripts_own_examples() {
                 }
             }
             other => {
-                if present {
-                    tally.ranked_out += 1;
-                } else {
-                    tally.not_matched += 1;
-                }
                 let actual = other
                     .and_then(|(id, _)| catalog.entry(id).map(|e| e.name.clone()))
                     .unwrap_or_else(|| "(nothing)".to_string());
+                if present {
+                    tally.ranked_out += 1;
+                    // Stratum B only: the entry's own pattern *did* match, so
+                    // this is purely a ranking loss and the one list worth
+                    // acting on. Mixing it with stratum A hid it behind
+                    // scaffolding lines that legitimately belong elsewhere.
+                    lost.push((
+                        expected_entry.name.clone(),
+                        case.code.clone(),
+                        actual.clone(),
+                    ));
+                } else {
+                    tally.not_matched += 1;
+                }
                 let slot = confusion
                     .entry((expected_entry.name.clone(), actual))
                     .or_insert((0, case.code.clone()));
@@ -332,6 +365,14 @@ fn classification_accuracy_against_skripts_own_examples() {
         eprintln!("   {name}");
     }
 
+    // Stratum B only: the entry's own pattern matched and still lost. This is
+    // the one list worth acting on — stratum A failures below are dominated by
+    // scaffolding lines that genuinely belong to another entry.
+    eprintln!("\nranked out despite matching ({}):", lost.len());
+    for (expected, code, actual) in &lost {
+        eprintln!("   {expected}  lost to  {actual}\n        {code}");
+    }
+
     eprintln!("\ntop misclassifications:");
     let mut ranked: Vec<_> = confusion.into_iter().collect();
     ranked.sort_by_key(|entry| std::cmp::Reverse(entry.1 .0));
@@ -342,12 +383,19 @@ fn classification_accuracy_against_skripts_own_examples() {
 
     // Floors, set below the measured values so this fails on a regression
     // rather than on an upstream database update.
-    // Measured 96.9% and 9 at the time of writing. The floors sit a little
-    // below so an upstream database update cannot fail the build on noise,
-    // while a real regression still does.
+    // Measured 99.4% and 9. The floor sits a little below so an upstream
+    // database update cannot fail the build on noise, while a real regression
+    // still does.
+    //
+    // 100% is not the target and would be the wrong one. The oracle is where
+    // upstream filed each example, and of the five remaining failures two are
+    // ones where this classifier is *right* and the filing is wrong — `if
+    // script named "x.sk" is loaded:` answers Is Script Loaded rather than the
+    // generic Is Loaded it is filed under. Driving this to 100% would mean
+    // making those answers worse.
     assert!(
-        stratum_b >= 95.0,
-        "ranking accuracy fell to {stratum_b:.1}% (floor 95%)"
+        stratum_b >= 98.5,
+        "ranking accuracy fell to {stratum_b:.1}% (floor 98.5%)"
     );
     // The nine that remain are upstream documentation errors, not matcher
     // defects: `Is Transparent`'s example ends in a full stop its pattern does

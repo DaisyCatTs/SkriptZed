@@ -13,6 +13,17 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+### Fixed
+
+- **`on right click` and `on left click` are recognised again.** Skript accepts
+  a separator as a space, a hyphen or nothing, so all of `right click`,
+  `right-click` and `rightclick` are the same event — but only the last two were
+  matching. The spaced spelling was being deleted while the pattern was
+  compiled, so two of the most-written lines in Skript resolved to nothing and
+  silently fell back to the generic event structure: no hover, no event values,
+  no documentation. 43 patterns use that construct, including `off hand`,
+  `IP banned` and `left handed`.
+
 ## [0.2.0] — 2026-08-07
 
 ### Added

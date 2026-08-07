@@ -21,8 +21,18 @@ const exe = process.platform === 'win32' ? 'skript-lsp.exe' : 'skript-lsp';
 // downloaded release asset, most usefully. A local `cargo build` passing proves
 // nothing about the artifact a user actually receives, and v0.1.0 shipped
 // several times before that gap was noticed.
+// Set but wrong must fail, not fall back. A typo — or a release download that
+// silently produced nothing — would otherwise pass against a local build while
+// appearing to have tested the published artifact, which is the exact failure
+// this variable exists to prevent.
+const override = process.env.SKRIPT_LSP_BINARY;
+if (override && !existsSync(override)) {
+  console.error(`SKRIPT_LSP_BINARY is set to a path that does not exist:\n  ${override}`);
+  process.exit(2);
+}
+
 const binary = [
-  process.env.SKRIPT_LSP_BINARY,
+  override,
   join(root, 'language-server', 'target', 'release', exe),
   join(root, 'language-server', 'target', 'debug', exe),
 ].find(candidate => candidate && existsSync(candidate));

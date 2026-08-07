@@ -171,6 +171,19 @@ impl Pattern {
         score
     }
 
+    /// Whether any part of the pattern is a `<regex>` slot.
+    ///
+    /// A regex is unbounded — Skript's catch-all event structure is literally
+    /// `[on] … <.+> …` — and the matcher records no span for what it consumed.
+    /// Anything scoring a *match* rather than a pattern therefore has to refuse
+    /// to credit these, or a pattern that explains nothing looks like one that
+    /// explains the entire line.
+    pub fn has_regex(&self) -> bool {
+        flatten(&self.nodes)
+            .into_iter()
+            .any(|node| matches!(node, Node::Regex(_)))
+    }
+
     /// Every `%…%` slot in the pattern, in source order.
     pub fn slots(&self) -> Vec<&Slot> {
         flatten(&self.nodes)

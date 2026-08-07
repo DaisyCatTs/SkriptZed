@@ -46,7 +46,15 @@ fn corpus() -> Option<Vec<PathBuf>> {
 
 fn catalog() -> Option<Catalog> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/docs.json");
-    let text = std::fs::read_to_string(path).ok()?;
+    // Absent means "not fetched" and skips. Present-but-unreadable is a real
+    // problem and must surface — `real_data.rs` learned this the hard way, when
+    // a helper that returned `None` for both hid the fact that `Docs::parse`
+    // had never once succeeded on the real file.
+    if !path.exists() {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{} exists but could not be read: {error}", path.display()));
     Some(Catalog::build(
         Docs::parse(&text).expect("vendor/docs.json parses"),
     ))
@@ -69,10 +77,18 @@ fn most_real_event_lines_resolve_to_a_specific_event() {
         for line in text.lines() {
             // Top-level only, and only lines that are plainly events: a header
             // opens a section, and `on ` is how every event is written.
-            if line.starts_with(char::is_whitespace) || !line.trim_end().ends_with(':') {
+            if line.starts_with(char::is_whitespace) {
                 continue;
             }
-            let code = line.trim();
+            // `on join: # note` is still a header. A `#` cannot be inside a
+            // string here — an event header has no strings before its colon.
+            let code = match line.find('#') {
+                Some(hash) => line[..hash].trim(),
+                None => line.trim(),
+            };
+            if !code.ends_with(':') {
+                continue;
+            }
             if !code.starts_with("on ") {
                 continue;
             }
@@ -87,7 +103,10 @@ fn most_real_event_lines_resolve_to_a_specific_event() {
     }
 
     let total = specific + fell_through.len();
-    assert!(total > 100, "expected a meaningful sample, got {total}");
+    // The corpus is cloned `--depth 1` from upstream HEAD, so this count drifts
+    // as Skript edits its own tests. Low enough that ordinary churn cannot trip
+    // it, high enough that an empty or broken checkout still fails loudly.
+    assert!(total >= 50, "expected a meaningful sample, got {total}");
 
     fell_through.sort();
     fell_through.dedup();

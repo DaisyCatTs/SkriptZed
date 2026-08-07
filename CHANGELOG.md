@@ -13,6 +13,18 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-08-07
+
+### Fixed
+
+- **An event header with a filter reads as one thing again.** In
+  `on left-click on a sign:`, the words `a sign` kept a leftover colour from the
+  grammar that also claimed they were a function. The event's own words and the
+  type it filters on are now coloured deliberately and differently, so the line
+  reads as "the click event, filtered to signs" in any theme.
+- Removed a styling rule for a token the language server never emits, which
+  looked like configuration and could never apply.
+
 ## [0.2.2] — 2026-08-07
 
 ### Fixed

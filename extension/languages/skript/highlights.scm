@@ -140,18 +140,19 @@
 ; nodes. Testing the variable's own text is the only positive form available.
 (variable) @variable
 
-; `{x}` — no sigil. A global: Skript persists it to variables.csv and it
-; outlives a restart. The only scope whose effect escapes the current trigger,
-; so it is the one worth seeing at a glance.
-((variable) @variable.special
-  (#match? @variable.special "^\\{[^-_}]"))
-
-; `{-x}` — ephemeral. Never saved, discarded on reload.
-((variable) @variable.member
-  (#match? @variable.member "^\\{-"))
-
-; `{_x}` — local to the running trigger. The workhorse, and deliberately left
-; as plain `@variable` by the base capture above.
+; The three scopes are *not* given separate captures, and that is deliberate.
+;
+; An earlier version marked globals `@variable.special` and ephemerals
+; `@variable.member`. Both are semantically wrong: `variable.special`
+; conventionally means `this`/`self`, and `variable.member` means a struct
+; field. A Skript global is neither — so themes styled them by their own
+; meaning, which in several themes includes *italics*, and variables started
+; leaning over for no reason a reader could infer.
+;
+; The distinction is already visible anyway: the sigil itself is captured below,
+; so `{_x}` and `{-x}` differ from `{x}` right where the difference lives. That
+; is honest styling — it marks what is actually there rather than recolouring a
+; whole token on a guess about what the theme means by "special".
 
 ; `_` marks a local and `-` an ephemeral variable; both are scope sigils rather
 ; than part of the name.

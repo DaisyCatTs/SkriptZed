@@ -137,12 +137,22 @@ impl Catalog {
         // generic structure — never `first (join|login)` and its documentation.
         if role.allows(Category::Event) {
             if let Some((bare, offset)) = strip_event_wrapper(code) {
-                if let Some((id, mut matched)) = self.first_in(bare, &[Category::Event]) {
-                    for capture in &mut matched.captures {
-                        capture.start += offset;
-                        capture.end += offset;
-                    }
-                    return Some((id, matched));
+                if let Some(hit) = self.shifted(bare, &[Category::Event], offset) {
+                    return Some(hit);
+                }
+            }
+        }
+
+        // `if`, `else if`, `while` and `do while` wrap a condition exactly as
+        // `on` wraps an event: the condition's own registered pattern never
+        // contains the keyword. Without undoing it, `if plugin "Vault" is
+        // enabled` resolves to the generic "Conditionals" section and the real
+        // condition is unreachable — measured against Skript's own examples,
+        // this accounted for 16 of the 20 entries that matched none of them.
+        if role.allows(Category::Condition) {
+            if let Some((bare, offset)) = strip_condition_keyword(code) {
+                if let Some(hit) = self.shifted(bare, &[Category::Condition], offset) {
+                    return Some(hit);
                 }
             }
         }
@@ -157,6 +167,20 @@ impl Catalog {
                 .find(|(id, _)| tier.contains(&id.category))
                 .map(|(id, matched)| (**id, matched.clone()))
         })
+    }
+
+    /// A match against `bare`, with its captures moved back onto the full line.
+    ///
+    /// Both wrapper-stripping paths need this: the captures come back relative
+    /// to the stripped text, and every caller — semantic tokens especially —
+    /// indexes them against the original.
+    fn shifted(&self, bare: &str, allowed: &[Category], offset: usize) -> Option<(EntryId, Match)> {
+        let (id, mut matched) = self.first_in(bare, allowed)?;
+        for capture in &mut matched.captures {
+            capture.start += offset;
+            capture.end += offset;
+        }
+        Some((id, matched))
     }
 
     /// The best match whose category is one of `allowed`.
@@ -307,6 +331,29 @@ fn strip_event_wrapper(line: &str) -> Option<(&str, usize)> {
 
     let trimmed = bare.trim_start();
     offset += bare.len() - trimmed.len();
+    let trimmed = trimmed.trim_end();
+
+    (!trimmed.is_empty()).then_some((trimmed, offset))
+}
+
+/// Removes the `if` / `else if` / `while` / `do while` that introduces a
+/// condition, returning the bare condition and its byte offset in `line`.
+///
+/// `else` alone is not included: it takes no condition, so stripping it would
+/// leave an empty string that matches nothing useful.
+fn strip_condition_keyword(line: &str) -> Option<(&str, usize)> {
+    // Longest first — `else if` must win over `if`, and `do while` over `while`.
+    const KEYWORDS: [&str; 4] = ["do while ", "else if ", "while ", "if "];
+
+    // Lowercasing ASCII preserves byte length, so offsets stay valid.
+    let lower = line.to_ascii_lowercase();
+    let keyword = KEYWORDS
+        .iter()
+        .find(|keyword| lower.starts_with(*keyword))?;
+
+    let rest = &line[keyword.len()..];
+    let trimmed = rest.trim_start();
+    let offset = line.len() - trimmed.len();
     let trimmed = trimmed.trim_end();
 
     (!trimmed.is_empty()).then_some((trimmed, offset))

@@ -118,3 +118,7 @@ on world save:
 	wait 5 seconds
 	wait 1 tick
 	set {_percent} to 50
+
+on player join:
+	send formatted "Hello" to player
+	play sound "entity.player.levelup" with volume 1 and pitch 1 to player

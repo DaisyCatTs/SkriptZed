@@ -35,6 +35,7 @@ local function internal_helper() returns boolean:
 	# another file must NOT find it.
 	return true
 
+
 # ------------------------------------------------------------------ commands
 
 command /home <text> [<text>]:

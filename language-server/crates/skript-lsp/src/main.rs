@@ -959,6 +959,19 @@ impl LanguageServer for Backend {
 
         let line = document.line(position.line);
         let prefix = convert::line_prefix(line, position.character);
+
+        // What an accepted completion should replace.
+        //
+        // Skript syntax is multi-word, and the client's idea of "the word being
+        // typed" stops at a space. So typing `send m` and accepting Message
+        // replaced only the `m`, leaving `send message %objects%` — the keyword
+        // duplicated. The server knows where the fragment really starts, so it
+        // says so rather than letting the client guess.
+        let replace = Range::new(
+            Position::new(position.line, fragment_start(prefix) as u32),
+            params.text_document_position.position,
+        );
+        let typed_fragment = &prefix[fragment_start(prefix).min(prefix.len())..];
         let mut items = Vec::new();
 
         // Inside a command, the useful suggestions are its entries — not the
@@ -1069,7 +1082,10 @@ impl LanguageServer for Backend {
                         // space typed. The client asks for the one item it
                         // actually shows via `completionItem/resolve`.
                         data: Some(serde_json::json!([category.label(), id.index])),
-                        insert_text: Some(snippet_for(pattern)),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: replace,
+                            new_text: snippet_for_typed(pattern, typed_fragment),
+                        })),
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
                         tags: entry
                             .is_deprecated()
@@ -1536,6 +1552,34 @@ fn in_command_entry_position(document: &skript_index::Document, line: u32) -> bo
     false
 }
 
+/// Byte column where the fragment the user is typing begins.
+///
+/// For an ordinary statement that is the first non-blank character: Skript
+/// syntax is a whole multi-word phrase, so accepting `Message` after `send m`
+/// has to replace both words, not just the `m`.
+///
+/// Inside `%…%`, or after an opening paren or a comma, the fragment starts
+/// there instead — an expression completion must not eat the effect around it.
+fn fragment_start(prefix: &str) -> usize {
+    let indent = prefix.len() - prefix.trim_start().len();
+
+    // The last thing that opens a nested context, if any.
+    let boundary = prefix
+        .char_indices()
+        .rfind(|(_, ch)| matches!(ch, '%' | '(' | ',' | '{'))
+        .map(|(at, ch)| at + ch.len_utf8());
+
+    match boundary {
+        // Skip whitespace after the delimiter so the replacement does not
+        // swallow the space the user typed.
+        Some(at) => {
+            let rest = &prefix[at..];
+            at + (rest.len() - rest.trim_start().len())
+        }
+        None => indent,
+    }
+}
+
 /// Builds a quick-fix action carrying one file's edits.
 fn quick_fix(
     title: &str,
@@ -1754,47 +1798,61 @@ fn filter_text_for(name: &str, pattern: &str) -> String {
 }
 
 /// Turns a Skript pattern into an LSP snippet, with a tab stop per slot.
+///
+/// The form inserted when the user has typed nothing to disambiguate a choice.
+#[cfg(test)]
 fn snippet_for(pattern: &str) -> String {
-    let mut out = String::with_capacity(pattern.len());
+    snippet_for_typed(pattern, "")
+}
+
+/// As [`snippet_for`], but preferring whichever alternative the user has begun
+/// to type, so accepting `Message` after typing `send` does not rewrite the word
+/// under the cursor into `message`.
+fn snippet_for_typed(pattern: &str, typed: &str) -> String {
+    let mut out = String::new();
     let mut stop = 1;
+    expand(pattern, typed, &mut stop, &mut out);
+    // Collapse the double spaces left by dropped optionals.
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Expands one level of pattern text into `out`.
+///
+/// Recursive, because a chosen branch is itself pattern text: Skript writes
+/// `(message|send [message[s]])`, so the optional lives *inside* the
+/// alternative. Pushing a branch verbatim leaked `[message[s]]` into the snippet
+/// as literal characters.
+fn expand(pattern: &str, typed: &str, stop: &mut usize, out: &mut String) {
     let mut chars = pattern.chars().peekable();
     let mut depth = 0i32;
 
     while let Some(ch) = chars.next() {
         match ch {
-            // Optional parts are dropped: the shortest correct form is the
-            // best starting point, and the user can add the rest.
+            // Optional parts are dropped: the shortest correct form is the best
+            // starting point, and the user can add the rest.
             '[' => depth += 1,
             ']' => depth = (depth - 1).max(0),
             _ if depth > 0 => {}
             '(' => {
-                // Take the first alternative of a choice, then skip the rest of
-                // the group — otherwise the remaining branches leak into the
-                // snippet as literal text.
-                let mut branch = String::new();
-                let mut taken = false;
+                let mut branches: Vec<String> = vec![String::new()];
                 let mut inner = 0i32;
                 for ch in chars.by_ref() {
                     match ch {
                         '(' => {
                             inner += 1;
-                            if !taken {
-                                branch.push(ch);
-                            }
+                            branches.last_mut().expect("never empty").push(ch);
                         }
                         ')' if inner == 0 => break,
                         ')' => {
                             inner -= 1;
-                            if !taken {
-                                branch.push(ch);
-                            }
+                            branches.last_mut().expect("never empty").push(ch);
                         }
-                        '|' if inner == 0 => taken = true,
-                        _ if !taken => branch.push(ch),
-                        _ => {}
+                        '|' if inner == 0 => branches.push(String::new()),
+                        _ => branches.last_mut().expect("never empty").push(ch),
                     }
                 }
-                out.push_str(branch.trim());
+                let chosen = pick_branch(&branches, typed).to_string();
+                expand(&chosen, typed, stop, out);
             }
             '%' => {
                 let mut name = String::new();
@@ -1806,7 +1864,7 @@ fn snippet_for(pattern: &str) -> String {
                 }
                 let name = name.trim_start_matches(['~', '-', '*']);
                 out.push_str(&format!("${{{stop}:{name}}}"));
-                stop += 1;
+                *stop += 1;
             }
             '<' => {
                 for ch in chars.by_ref() {
@@ -1815,14 +1873,45 @@ fn snippet_for(pattern: &str) -> String {
                     }
                 }
                 out.push_str(&format!("${stop}"));
-                stop += 1;
+                *stop += 1;
             }
             _ => out.push(ch),
         }
     }
+}
 
-    // Collapse the double spaces left by dropped optionals.
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Which branch of a choice to insert.
+///
+/// The one the user has started typing, when there is one — otherwise the first,
+/// which is the shortest correct form.
+///
+/// Both sides are reduced to their leading word. A branch carries its own tail —
+/// Skript writes `(message|send [message[s]])` — and `typed` is the whole
+/// fragment entered so far, which may already have moved past the keyword.
+/// Comparing leading words is the only thing that lines the two up.
+fn pick_branch<'a>(branches: &'a [String], typed: &str) -> &'a str {
+    let first_word = |text: &str| {
+        text.split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_matches(|ch: char| !ch.is_alphanumeric())
+            .to_ascii_lowercase()
+    };
+
+    let wanted = first_word(typed);
+    if !wanted.is_empty() {
+        for branch in branches {
+            let candidate = branch.trim();
+            let head = first_word(candidate);
+            if !head.is_empty() && head.starts_with(&wanted) {
+                return candidate;
+            }
+        }
+    }
+    branches
+        .first()
+        .map(|branch| branch.trim())
+        .unwrap_or_default()
 }
 
 fn lsp_symbol_kind(kind: SymbolKind) -> tower_lsp::lsp_types::SymbolKind {
@@ -2319,5 +2408,73 @@ mod code_action_helpers {
         // `xy` is two edits from `ab`, which for a two-letter name is the whole
         // word; the limit is 1 so nothing is offered.
         assert_eq!(closest_function(&workspace, "xy"), None);
+    }
+}
+
+#[cfg(test)]
+mod completion_insertion {
+    use super::{fragment_start, pick_branch, snippet_for, snippet_for_typed};
+
+    /// Skript's real Message pattern, where the optional lives *inside* the
+    /// alternative. Matching on whole branch text meant `send [message[s]]`
+    /// never matched somebody typing `send`, and pushing the branch verbatim
+    /// leaked `[message[s]]` into the snippet as literal characters.
+    const MESSAGE: &str = "(message|send [message[s]]) %objects% [to %audiences%]";
+
+    #[test]
+    fn a_typed_keyword_survives_and_its_optional_does_not_leak() {
+        for typed in ["send", "se", "send m"] {
+            let snippet = snippet_for_typed(MESSAGE, typed);
+            assert!(
+                snippet.starts_with("send"),
+                "typing {typed:?} inserted {snippet:?}"
+            );
+            assert!(!snippet.contains('['), "an optional leaked: {snippet:?}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_still_the_shortest_form() {
+        assert_eq!(snippet_for(MESSAGE), "message ${1:objects}");
+    }
+
+    #[test]
+    fn tab_stops_stay_sequential_through_a_chosen_branch() {
+        // A slot inside the branch must not restart the numbering.
+        let snippet = snippet_for_typed("(give %items% to|hand) %players%", "give");
+        assert!(snippet.contains("${1:"), "{snippet:?}");
+        assert!(snippet.contains("${2:"), "{snippet:?}");
+    }
+
+    #[test]
+    fn an_unrelated_word_falls_back_to_the_first_branch() {
+        let list = vec!["message".to_string(), "send".to_string()];
+        assert_eq!(pick_branch(&list, "teleport"), "message");
+        assert_eq!(pick_branch(&list, ""), "message");
+    }
+
+    /// Skript syntax is multi-word and the client's "current word" stops at a
+    /// space, so accepting after `send m` used to replace only the `m` and leave
+    /// the keyword duplicated.
+    #[test]
+    fn a_statement_fragment_covers_the_whole_phrase() {
+        assert_eq!(fragment_start("\t\tsend m"), 2);
+        assert_eq!(fragment_start("send"), 0);
+    }
+
+    #[test]
+    fn a_nested_fragment_starts_after_its_delimiter() {
+        for line in [
+            "\tsend \"%pla",
+            "\tset {_x} to greet(player, am",
+            "\tset {_x} to f(pl",
+        ] {
+            let start = fragment_start(line);
+            assert!(
+                !line[start..].contains(['%', '(', ',']),
+                "{line:?} -> {:?} still spans a delimiter",
+                &line[start..]
+            );
+        }
     }
 }

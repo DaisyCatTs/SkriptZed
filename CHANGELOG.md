@@ -13,6 +13,23 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-08-07
+
+### Fixed
+
+- **No more phantom "No function named `x` is declared in this project".** An
+  editor opens your file the instant the server starts, before the project's
+  scripts have been read off disk — so a call to a function in a file you had
+  not opened was reported as missing, and the error stayed until you edited
+  something. The check now waits until the project has actually been read, and
+  diagnostics refresh once it has.
+
+### Added
+
+- **`node scripts/make-test-server.mjs`** builds a throwaway server directory of
+  stub plugin JARs, so the addon syntax in `examples/sample-project/addons.sk`
+  can be exercised without running a server with seven addons installed.
+
 ## [0.2.1] — 2026-08-07
 
 ### Fixed

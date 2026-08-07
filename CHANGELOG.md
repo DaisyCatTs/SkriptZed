@@ -13,6 +13,16 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+### Added
+
+- **skript-reflect's Java calls are coloured.** `Bukkit.getVersion`,
+  `Material.DIAMOND` and `{_item}.getItemMeta()` were the one thing in a `.sk`
+  file that nothing described — no Skript pattern covers them — so they sat as
+  plain text, which in a reflect-heavy script is most of the file. They cannot
+  be classified, but they have a recognisable shape, and neither form occurs
+  anywhere in the 540 scripts Skript itself ships, so ordinary Skript is
+  untouched. A reflect-heavy file goes from 83% to 94% coloured.
+
 ## [0.2.4] — 2026-08-07
 
 ### Fixed

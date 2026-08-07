@@ -296,3 +296,38 @@
   body: (assignment_body
     (assignment
       value: (_)+ @constant)))
+
+; --------------------------------------------------------- skript-reflect
+;
+; skript-reflect lets a script call Java directly, and those calls are the one
+; thing in a `.sk` file that is not Skript at all — no pattern in `docs.json` or
+; SkriptHub describes `HashMap.put`, so the language server correctly says
+; nothing about them and they were left colourless. In a reflect-heavy script
+; that is most of the file.
+;
+; The grammar cannot classify them, but it does not need to: unlike Skript
+; prose, Java interop has a *shape*. Both forms below occur exactly zero times
+; across the 540 scripts Skript itself ships, so matching them cannot recolour
+; ordinary Skript.
+;
+; `new HashMap()` needs nothing — the parser already reads `HashMap` as a
+; `function_call`, which is captured above.
+;
+; Note `[.]` rather than `\.`: a backslash escape inside a query string is not
+; processed the way it looks, and `"^\.[a-z]"` silently loses its anchor, so
+; `Bukkit.getVersion` matched a rule meant only for `.getVersion`.
+
+; `Material.DIAMOND`, `NamedTextColor.AQUA` — an enum constant reached through
+; its class. Checked before the general form below, which would also match.
+((word) @constant
+  (#match? @constant "^[A-Z][A-Za-z0-9_]*[.][A-Z_][A-Z0-9_]*$"))
+
+; `Bukkit.getVersion`, `UUID.randomUUID`, `Arrays.asList` — a static call or
+; field on a named class.
+((word) @type
+  (#match? @type "^[A-Z][A-Za-z0-9_]*[.]"))
+
+; `.put`, `.getItemMeta`, `.forEach` — a method on whatever precedes it, which
+; is usually a variable: `{_item}.getItemMeta()`.
+((word) @function.call
+  (#match? @function.call "^[.][a-z]"))

@@ -772,14 +772,14 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skript-addons"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "zip",
 ]
 
 [[package]]
 name = "skript-docs"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -789,7 +789,7 @@ dependencies = [
 
 [[package]]
 name = "skript-format"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "skript-index",
  "tree-sitter",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "skript-index"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "tree-sitter",
  "tree-sitter-skript",
@@ -805,7 +805,7 @@ dependencies = [
 
 [[package]]
 name = "skript-lsp"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "skript-syntax"
-version = "0.2.5"
+version = "0.3.0"
 dependencies = [
  "serde_json",
 ]

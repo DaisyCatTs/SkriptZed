@@ -13,6 +13,8 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
 ### Added
 
 #### Skript 2.17
@@ -446,7 +448,8 @@ below is new.
   picks the wrong one. `{_x} is not set` is matched by both `Exists/Is Set` and
   the general `Comparison`, and hover shows the latter.
 
-[Unreleased]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.2...v0.2.3

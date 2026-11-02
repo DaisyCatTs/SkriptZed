@@ -10,7 +10,7 @@ description = "Typed model, runtime fetch and cache for Skript's published docs.
 skript-syntax = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+ureq = { version = "3", default-features = false, features = ["tls", "gzip"] }
 
 [dev-dependencies]
 skript-syntax = { workspace = true }

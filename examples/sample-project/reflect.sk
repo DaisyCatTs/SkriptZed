@@ -154,6 +154,35 @@ command /reflect:
 		Bukkit.broadcastMessage({_uuid}.toString())
 
 # ======================================
+# Custom syntax
+# ======================================
+
+effect greet everyone:
+	trigger:
+		loop all players:
+			greet(loop-player)
+
+expression [the] coins of %player%:
+	get:
+		return {coins::%expr-1's uuid%} ? 0
+
+condition %player% is rich:
+	check:
+		if {coins::%expr-1's uuid%} is greater than 100:
+			continue
+
+local effect announce %string%:
+	trigger:
+		broadcast "{@prefix} %expr-1%"
+
+command /custom:
+	trigger:
+		greet everyone
+		set {_coins} to the coins of player
+		if player is rich:
+			announce "%player% has %{_coins}% coins"
+
+# ======================================
 # Lambdas
 # ======================================
 

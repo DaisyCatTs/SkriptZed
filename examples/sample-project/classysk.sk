@@ -1,0 +1,47 @@
+# ======================================
+# ClassySK — https://github.com/novystar/ClassySK
+# ======================================
+#
+# A class that queues action-bar messages per player and cycles through them,
+# each message expiring after its own duration.
+
+class SmartActionBar:
+	public player: player
+	public refreshRate: integer = 1
+
+	private isActive: boolean = false
+	private values: strings
+
+	public play(value: string, duration: timespan):
+		add {_value} to self::values
+
+		if self::isActive is false:
+			self::start()
+
+		wait {_duration}
+		remove {_value} from self::values
+
+	public start():
+		set self::isActive to true
+
+		while self::isActive is true:
+			if size of self::values is 0:
+				exit loop
+
+			set {_text} to join self::values with "&7 | &r"
+			send action bar {_text} ? "" to self::player
+
+			wait self::refreshRate * 1 tick
+
+		send action bar "" to self::player
+		set self::isActive to false
+
+on join:
+	set {-actionBar::%player%} to new instance of SmartActionBar:
+		player: player
+		refreshRate: 1
+
+	{-actionBar::%player%}::play("<red>cool text", 3 seconds)
+
+on quit:
+	delete {-actionBar::%player%}

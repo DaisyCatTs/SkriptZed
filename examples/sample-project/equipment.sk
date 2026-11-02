@@ -1,0 +1,50 @@
+# ======================================
+# Equipment sync — modern Skript in one file
+# ======================================
+#
+# Skript 2.17 named arguments, a ClassySK class with a static method, and
+# SkBee's switch/case. Every expression inside an argument is classified:
+# `{_p}'s helmet` reads as "possessive + equipment slot", `future event-item`
+# as a state expression.
+#
+# Needs SkBee and ClassySK detected. In this sample project that is done by
+# pointing `serverPath` at ./test-server (see README.md).
+
+class Equipment:
+	public slot: string
+	public item: item
+
+	public static get(slot: string, item: item) :: object:
+		return new instance of Equipment:
+			slot: {_slot}
+			item: {_item}
+
+function updateEquip(p: player, e: object, s: boolean = true):
+	if {_s} is true:
+		send action bar "%{_e}::slot% updated" to {_p}
+
+function fullEquipUpdate(p: player, s: boolean = true):
+	updateEquip(p: {_p}, e: Equipment::get("helmet", {_p}'s helmet), s: {_s})
+	updateEquip(p: {_p}, e: Equipment::get("chestplate", {_p}'s chestplate), s: {_s})
+	updateEquip(p: {_p}, e: Equipment::get("leggings", {_p}'s leggings), s: {_s})
+	updateEquip(p: {_p}, e: Equipment::get("boots", {_p}'s boots), s: {_s})
+	updateEquip(p: {_p}, e: Equipment::get("hand", {_p}'s held item), s: {_s})
+
+on join:
+	fullEquipUpdate(player)
+
+on tool change:
+	updateEquip(p: player, e: Equipment::get("hand", future event-item))
+
+on armor change:
+	switch event-equipment slot:
+		case helmet:
+			updateEquip(p: player, e: Equipment::get("helmet", future event-item))
+		case chestplate:
+			updateEquip(p: player, e: Equipment::get("chestplate", future event-item))
+		case leggings:
+			updateEquip(p: player, e: Equipment::get("leggings", future event-item))
+		case boots:
+			updateEquip(p: player, e: Equipment::get("boots", future event-item))
+		default:
+			stop

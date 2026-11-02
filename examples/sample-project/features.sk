@@ -1,0 +1,166 @@
+###
+What is new since 0.2.5, one numbered block per feature.
+
+Each block starts with a comment saying what to do and what you should see.
+Where you are asked to type something, the line is not here yet: press Enter
+at the end of the line marked with an arrow and type it yourself. Undo
+afterwards and the file is back to clean.
+
+Open the whole sample-project folder, not just this file, so the language
+server indexes library.sk and the others alongside it. TESTING.md lists the
+Zed settings this needs; the short version is semantic tokens on, and
+"show_signature_help_after_edits": true for argument hints after a completion.
+
+Exactly one line in this file is wrong on purpose: the misspelt option in
+block 4. It should be the only diagnostic you see.
+###
+
+options:
+	prefix: &8[&6Bank&8]&r
+	farewell: &7See you soon,
+	docs: https://docs.skriptlang.org/docs.html
+
+# ------------------------------------------------------- 1. variable completion
+#
+# Completion inside braces offers the names your scripts actually use, since
+# Skript declares almost nothing up front.
+
+# Locals are scoped to their trigger. On the marked line, press Enter and type
+# `{_` — you should be offered _balance, _p and _amount (the parameters count),
+# and not _visitor, which belongs to the `on join:` further down.
+function giveCoins(p: player, amount: number = 10):
+	set {_balance} to {coins::%{_p}'s uuid%} ? 0
+	add {_amount} to {_balance}
+	set {coins::%{_p}'s uuid%} to {_balance} # <- press Enter here
+
+# Globals come from the whole project. List variables complete one level at a
+# time: on the marked line, press Enter and type `{data::` — the choices are
+# `%player's uuid%`, `settings` and `*`. Pick `settings` and the next level
+# offers motd, volume and `*`. A plain `{` lists every global in every file,
+# including the ones in showcase.sk and library.sk.
+on join:
+	set {_visitor} to player
+	add 1 to {data::%player's uuid%::joins}
+	set {data::settings::motd} to "Welcome back!"
+	set {data::settings::volume} to 0.5
+	send {data::settings::motd} to {_visitor} # <- press Enter here
+
+on quit:
+	delete {data::%player's uuid%::*}
+
+# ---------------------------------------------------------- 2. colour swatches
+#
+# Every colour code below carries a small swatch of the colour it produces:
+# legacy `&6`, Spigot's `&x&f&f&5&5&5&5` hex, MiniMessage names like `<red>`
+# and MiniMessage hex like `<#55ffff>`. The `prefix` option at the top has
+# them too. Click a swatch and pick a different colour: it is written back in
+# the same style it had, so a legacy `&` code comes back as `&x&…` legacy hex
+# and a `<…>` tag comes back as `<#rrggbb>`. `&l` and `&r` are formatting, not
+# colours, and get no swatch.
+on first join:
+	send "&6Gold, &x&f&f&5&5&5&5legacy hex, <red>a named colour, <#55ffff>MiniMessage hex" to player
+	send "&a&lBold green&r and <dark_purple>dark purple" to player
+
+# ----------------------------------------------------------- 3. clickable links
+#
+# Ctrl+click (Cmd+click on macOS) a URL to open it: inside a <link:…> tag,
+# bare in a string, in an option value (the `docs` option above), or in a
+# comment like this one: https://github.com/sovdeeth/oopsk
+on respawn:
+	send "<link:https://docs.skriptlang.org/>Click to open the Skript docs" to player
+	send "Docs are also at {@docs}" to player
+	send "Report bugs at https://github.com/SkriptLang/Skript/issues" to player
+
+# ------------------------------------------------------ 4. unknown option + fix
+#
+# DELIBERATE ERROR. The broadcast below uses `farewel`, but the options block
+# declares `farewell`. It is reported as an unknown option even though it sits
+# inside a string. Put the cursor on it and open code actions (Ctrl+. or
+# Cmd+.): the quick fix adds `farewel:` to the `options:` block, which clears
+# the error. Undo that afterwards so the file keeps its one example.
+on quit:
+	broadcast "{@farewel} %player%!"
+
+# -------------------------------------------------------------- 5. signature help
+#
+# On the marked line, press Enter and type `reward(`. The hint lists all four
+# parameters, and the default `vector(1, 7, 0)` stays one piece instead of
+# being split at its commas. Type `player, ` and `amount` is highlighted; then
+# type `loud: ` and `loud` is highlighted, even though it is the third
+# argument written, because a named argument fills the parameter it names.
+#
+# If the hint vanishes after you accept a completion, Zed needs
+# "show_signature_help_after_edits": true.
+function reward(p: player, amount: number = 10, offset: vector = vector(1, 7, 0), loud: boolean = true):
+	add {_amount} to {coins::%{_p}'s uuid%}
+	drop a gold nugget at {_p}'s location ~ {_offset}
+	if {_loud} is true:
+		send "{@prefix} &a+%{_amount}% coins" to {_p}
+
+on join:
+	reward(p: player, loud: false) # <- press Enter here
+
+# ------------------------------------------------------------------ 6. hover
+#
+# Hover each of these on the lines below:
+#   {_p}          the variable, and where it is set
+#   helmet        in `{_p}'s helmet`: Armor Slot, not the Set effect around it
+#   floor         Skript's built-in floor() function and its documentation
+#   reward        your own function's signature, from block 5
+#   giveCoins     the same, from block 1
+on respawn:
+	set {_p} to player
+	set {_hat} to {_p}'s helmet
+	set {_amount} to floor(7.8)
+	reward({_p}, {_amount})
+	giveCoins({_p})
+	send "%{_hat}%" to {_p}
+
+# ------------------------------------------------------- 7. Skript 2.17 subcommands
+#
+# `subcommand` lines used to be parse errors that broke the outline and folding
+# for the whole file. Open the outline (Ctrl+Shift+O): /bank contains
+# `subcommand balance`, the `subcommands` group, and `subcommand give …` inside
+# it. Each one folds on its own. Arguments named in a subcommand pattern become
+# locals of its trigger, so hover `{_target}` below.
+command /bank:
+	description: Check your coins, or give some away.
+	executable by: players
+	trigger:
+		send "{@prefix} Try /bank balance or /bank give." to player
+	subcommand balance:
+		trigger:
+			send "{@prefix} You have %{coins::%player's uuid%} ? 0% coins." to player
+	subcommands:
+		subcommand give <target: player> <amount: number>:
+			trigger:
+				reward(p: {_target}, amount: {_amount})
+				send "{@prefix} Sent %{_amount}% coins to %{_target}%." to player
+
+# ------------------------------------------------------------- 8. oopsk structs
+#
+# https://github.com/sovdeeth/oopsk
+#
+# `struct Message:` is a template, not an event. It shows in the outline with
+# its three fields and folds. `const` makes a field read-only after creation;
+# hover `timestamp` to see its type and default. The `converts to:` section
+# says how a Message becomes a string, which is why the broadcast below can
+# print one directly.
+#
+# With oopsk detected (the generated test server has it, see README.md), hover
+# `struct copy` and `template of` in the trigger for oopsk's own documentation.
+struct Message:
+	contents: string
+	sender: offline player
+	const timestamp: date = now
+	converts to:
+		string via this->contents
+
+on chat:
+	set {_message} to a message struct instance:
+		sender: player
+		contents: message
+	set {_copy} to a struct copy of {_message}
+	broadcast {_copy}
+	set {_kind} to template of {_message}
+	send "That was a %{_kind}% struct." to player

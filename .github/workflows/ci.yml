@@ -188,9 +188,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
+        # The notes are the tag's section of CHANGELOG.md, folded under a
+        # "Full changelog" toggle so short highlights can be written above it
+        # on the draft. GitHub's generated notes list merged pull requests, and
+        # most work lands without one, so v0.3.0 went out listing a single
+        # Renovate PR.
         run: |
+          awk -v section="## [${TAG#v}]" \
+            'index($0, section) == 1 { found = 1; next } found && /^## \[/ { exit } found' \
+            CHANGELOG.md > section.md
+          if [ ! -s section.md ]; then
+            echo "CHANGELOG.md has no '## [${TAG#v}]' section" >&2
+            exit 1
+          fi
+          {
+            printf '<details>\n<summary><b>Full changelog</b></summary>\n\n'
+            cat section.md
+            printf '\n</details>\n'
+          } > notes.md
           gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --draft --verify-tag --generate-notes
+            || gh release create "$TAG" --draft --verify-tag --notes-file notes.md
 
   release:
     name: Release binaries

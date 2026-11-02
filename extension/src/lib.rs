@@ -18,6 +18,12 @@ use zed_extension_api::{self as zed, LanguageServerId, Result};
 /// GitHub repository that publishes `skript-lsp` release binaries.
 const RELEASE_REPO: &str = "DaisyCatTs/SkriptZed";
 
+/// The language server's binary name, before any platform suffix.
+const SERVER_NAME: &str = "skript-lsp";
+
+/// Every versioned install directory is named this plus the version.
+const INSTALL_DIR_PREFIX: &str = "skript-lsp-";
+
 /// How long a successful version check stays good for. Without this, every Zed
 /// restart hits the GitHub API and a rate-limited response would otherwise take
 /// the language server down with it.
@@ -26,7 +32,7 @@ const UPDATE_CHECK_TTL_SECONDS: u64 = 24 * 60 * 60;
 const NOT_FOUND_MESSAGE: &str = concat!(
     "Could not find or download skript-lsp.\n\n",
     "The Skript extension still provides syntax highlighting, indentation, ",
-    "folding by indent, outline and snippets without it — completion, hover, ",
+    "folding by indent, outline and snippets without it. Completion, hover, ",
     "diagnostics, go-to-definition and rename need the language server.\n\n",
     "Install it, or point Zed at an existing build:\n\n",
     "  \"lsp\": { \"skript-lsp\": { \"binary\": { \"path\": \"/path/to/skript-lsp\" } } }",
@@ -56,52 +62,62 @@ struct SkriptExtension {
     /// binary deleted underneath us is re-resolved rather than reported as
     /// working.
     cached_binary_path: Option<String>,
+    /// Whether an unreadable `lsp.skript-lsp` block has been reported yet.
+    /// Zed asks for the settings several times per start; once is enough.
+    reported_bad_settings: bool,
 }
 
 impl SkriptExtension {
+    /// The user's `lsp.skript-lsp` block.
+    ///
+    /// A malformed block used to be swallowed by `.ok()`, which made it
+    /// indistinguishable from having configured nothing at all: the user sets
+    /// a binary path, gets a typo subtly wrong, and the extension silently
+    /// walks past it to the download path and reports "could not find or
+    /// download skript-lsp", or starts the server without the options they
+    /// wrote. The problem is logged, once.
+    fn lsp_settings(
+        &mut self,
+        language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Option<LspSettings> {
+        match LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                if !self.reported_bad_settings {
+                    self.reported_bad_settings = true;
+                    println!(
+                        "{SERVER_NAME}: ignoring unreadable `lsp.{SERVER_NAME}` settings: {error}"
+                    );
+                }
+                None
+            }
+        }
+    }
+
     fn language_server_binary(
         &mut self,
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        // A malformed `lsp.skript-lsp` block used to be swallowed by `.ok()`,
-        // which made it indistinguishable from having configured nothing at all:
-        // the user sets a binary path, gets a typo subtly wrong, and the
-        // extension silently walks past it to the download path and reports
-        // "could not find or download skript-lsp". Say what actually happened.
-        let settings = match LspSettings::for_worktree(language_server_id.as_ref(), worktree) {
-            Ok(settings) => Some(settings),
-            Err(error) => {
-                println!("skript-lsp: ignoring unreadable `lsp.skript-lsp` settings: {error}");
-                None
-            }
-        };
-        let binary_settings = settings.and_then(|settings| settings.binary);
+        let binary_settings = self
+            .lsp_settings(language_server_id, worktree)
+            .and_then(|settings| settings.binary);
         let configured_args = binary_settings
             .as_ref()
             .and_then(|binary| binary.arguments.clone());
 
-        // 1. An explicit path in the user's settings always wins.
-        if let Some(path) = binary_settings.and_then(|binary| binary.path) {
-            return Ok(zed::Command {
-                command: path,
-                args: configured_args.unwrap_or_default(),
-                env: worktree.shell_env(),
-            });
-        }
-
-        // 2. A copy the user installed themselves.
-        if let Some(path) = worktree.which(&exe_name("skript-lsp")) {
-            return Ok(zed::Command {
-                command: path,
-                args: configured_args.unwrap_or_default(),
-                env: worktree.shell_env(),
-            });
-        }
-
-        // 3. Fall back to a Zed-managed download.
+        // An explicit path in the user's settings always wins, then a copy the
+        // user installed themselves, then a Zed-managed download.
+        let command = match binary_settings.and_then(|binary| binary.path) {
+            Some(path) => path,
+            None => match worktree.which(&exe_name(SERVER_NAME)) {
+                Some(path) => path,
+                None => self.download_binary(language_server_id)?,
+            },
+        };
         Ok(zed::Command {
-            command: self.download_binary(language_server_id)?,
+            command,
             args: configured_args.unwrap_or_default(),
             env: worktree.shell_env(),
         })
@@ -119,10 +135,9 @@ impl SkriptExtension {
         // can fail.
         let existing = newest_local_install();
 
-        if existing.is_some() && !update_check_due() {
-            let path = existing.unwrap();
+        if let Some(path) = existing.as_ref().filter(|_| !update_check_due()) {
             self.cached_binary_path = Some(path.clone());
-            return Ok(path);
+            return Ok(path.clone());
         }
 
         match self.fetch_latest(language_server_id) {
@@ -165,38 +180,21 @@ impl SkriptExtension {
         )?;
 
         let (os, arch) = zed::current_platform();
-        let asset_name = format!(
-            "skript-lsp-{arch}-{os}.{extension}",
-            arch = match arch {
-                zed::Architecture::Aarch64 => "aarch64",
-                zed::Architecture::X8664 => "x86_64",
-                zed::Architecture::X86 =>
-                    return Err("skript-lsp is not built for 32-bit x86".into()),
-            },
-            os = match os {
-                zed::Os::Mac => "apple-darwin",
-                zed::Os::Linux => "unknown-linux-gnu",
-                zed::Os::Windows => "pc-windows-msvc",
-            },
-            extension = match os {
-                zed::Os::Mac | zed::Os::Linux => "tar.gz",
-                zed::Os::Windows => "zip",
-            },
-        );
-
-        let asset = release
-            .assets
+        let candidates = asset_names(os, arch)?;
+        let asset = candidates
             .iter()
-            .find(|asset| asset.name == asset_name)
+            .find_map(|name| release.assets.iter().find(|asset| &asset.name == name))
             .ok_or_else(|| {
                 format!(
-                    "release {} has no asset named {asset_name}",
-                    release.version
+                    "release {} has no asset named {}",
+                    release.version,
+                    candidates.join(" or ")
                 )
             })?;
+        let asset_name = &asset.name;
 
         let version_dir = version_dir(&release.version);
-        let binary_path = format!("{version_dir}/{}", exe_name("skript-lsp"));
+        let binary_path = format!("{version_dir}/{}", exe_name(SERVER_NAME));
 
         if !fs::metadata(&binary_path).is_ok_and(|stat| stat.is_file()) {
             zed::set_language_server_installation_status(
@@ -226,6 +224,7 @@ impl zed::Extension for SkriptExtension {
     fn new() -> Self {
         Self {
             cached_binary_path: None,
+            reported_bad_settings: false,
         }
     }
 
@@ -242,11 +241,9 @@ impl zed::Extension for SkriptExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<zed::serde_json::Value>> {
-        Ok(
-            LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-                .ok()
-                .and_then(|settings| settings.settings),
-        )
+        Ok(self
+            .lsp_settings(language_server_id, worktree)
+            .and_then(|settings| settings.settings))
     }
 
     fn language_server_initialization_options(
@@ -254,11 +251,9 @@ impl zed::Extension for SkriptExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<zed::serde_json::Value>> {
-        Ok(
-            LspSettings::for_worktree(language_server_id.as_ref(), worktree)
-                .ok()
-                .and_then(|settings| settings.initialization_options),
-        )
+        Ok(self
+            .lsp_settings(language_server_id, worktree)
+            .and_then(|settings| settings.initialization_options))
     }
 
     /// Skript's completion labels carry the raw pattern (`give %item type% to
@@ -316,8 +311,32 @@ fn exe_name(stem: &str) -> String {
     }
 }
 
+/// The release asset names to download for this platform, best first.
+///
+/// On Linux the static musl build comes first: the glibc build needs glibc
+/// 2.34, which Debian 11, Ubuntu 20.04 and RHEL 8 do not have, and those are
+/// common hosts for Zed's remote development over SSH. Releases published
+/// before the musl assets existed only carry the gnu build, so it stays as the
+/// fallback. macOS and Windows have one build each.
+fn asset_names(os: zed::Os, arch: zed::Architecture) -> Result<Vec<String>> {
+    let arch = match arch {
+        zed::Architecture::Aarch64 => "aarch64",
+        zed::Architecture::X8664 => "x86_64",
+        zed::Architecture::X86 => return Err(format!("{SERVER_NAME} is not built for 32-bit x86")),
+    };
+    let (targets, extension): (&[&str], &str) = match os {
+        zed::Os::Mac => (&["apple-darwin"], "tar.gz"),
+        zed::Os::Linux => (&["unknown-linux-musl", "unknown-linux-gnu"], "tar.gz"),
+        zed::Os::Windows => (&["pc-windows-msvc"], "zip"),
+    };
+    Ok(targets
+        .iter()
+        .map(|target| format!("{SERVER_NAME}-{arch}-{target}.{extension}"))
+        .collect())
+}
+
 fn version_dir(version: &str) -> String {
-    format!("skript-lsp-{version}")
+    format!("{INSTALL_DIR_PREFIX}{version}")
 }
 
 /// The newest `skript-lsp-*` directory already present in the extension's work
@@ -327,7 +346,7 @@ fn newest_local_install() -> Option<String> {
         .ok()?
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.starts_with("skript-lsp-"))
+        .filter(|name| name.starts_with(INSTALL_DIR_PREFIX))
         .collect();
 
     // Compare version components numerically. Sorting the directory names
@@ -337,7 +356,7 @@ fn newest_local_install() -> Option<String> {
     candidates.sort_by_key(|name| std::cmp::Reverse(version_key(name)));
 
     candidates.into_iter().find_map(|dir| {
-        let path = format!("{dir}/{}", exe_name("skript-lsp"));
+        let path = format!("{dir}/{}", exe_name(SERVER_NAME));
         fs::metadata(&path)
             .is_ok_and(|stat| stat.is_file())
             .then_some(path)
@@ -349,7 +368,7 @@ fn newest_local_install() -> Option<String> {
 /// Anything unparseable sorts lowest, so a stray directory never wins.
 fn version_key(directory: &str) -> Vec<u64> {
     directory
-        .trim_start_matches("skript-lsp-")
+        .trim_start_matches(INSTALL_DIR_PREFIX)
         .split(|ch: char| !ch.is_ascii_digit())
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse().ok())
@@ -387,7 +406,7 @@ fn remove_other_versions(keep: &str) {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        if name.starts_with("skript-lsp-") && name != keep {
+        if name.starts_with(INSTALL_DIR_PREFIX) && name != keep {
             let _ = fs::remove_dir_all(entry.path());
         }
     }

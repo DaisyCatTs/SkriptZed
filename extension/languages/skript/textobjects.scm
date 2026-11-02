@@ -13,6 +13,16 @@
 (function
   body: (_) @function.inside) @function.around
 
+; ClassySK — here `class.*` finally means a class.
+(method
+  body: (_) @function.inside) @function.around
+
+(class
+  body: (_) @class.inside) @class.around
+
+(struct
+  body: (_) @class.inside) @class.around
+
 (event
   body: (_) @class.inside) @class.around
 

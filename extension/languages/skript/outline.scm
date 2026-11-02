@@ -46,6 +46,29 @@
   (keyword) @context
   feature: (experiment) @name) @item
 
+; oopsk — `struct Message:`. Its fields are entries, caught by the entry rule.
+(struct
+  (keyword) @context
+  name: (identifier) @name) @item
+
+; ClassySK — `class Wallet:` and its members.
+(class
+  (keyword) @context
+  name: (identifier) @name) @item
+
+(class_field
+  (modifier)* @context
+  name: (identifier) @name) @item
+
+(method
+  (modifier)* @context
+  name: (identifier) @name) @item
+
+; `subcommand <number>:` (Skript 2.17), named by its pattern like a command.
+(subcommand
+  (keyword) @name
+  argument: (command_argument)* @name) @item
+
 ; Command entries — `permission:`, `trigger:`, `cooldown:` — and the keys of an
 ; `options:` block, so the outline mirrors the file's real shape.
 (entry_section

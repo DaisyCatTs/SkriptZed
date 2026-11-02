@@ -121,6 +121,46 @@
     "body": ["trigger:", "\t$0"],
     "description": "Command trigger section"
   },
+  "Command with subcommands": {
+    "prefix": "commandsub",
+    "body": [
+      "command /${1:home}:",
+      "\tsubcommand ${2:set} <${3:name}: ${4:text}>:",
+      "\t\ttrigger:",
+      "\t\t\t${5:stop}",
+      "\tsubcommand <${3:name}: ${4:text}>:",
+      "\t\tsuggestions:",
+      "\t\t\tadd ${6:\"spawn\"} to the suggestions for the ${3:name} argument",
+      "\t\ttrigger:",
+      "\t\t\t$0"
+    ],
+    "description": "Command with subcommands and tab completions (Skript 2.17+)"
+  },
+  "Subcommand": {
+    "prefix": "subcommand",
+    "body": ["subcommand ${1:name}:", "\ttrigger:", "\t\t$0"],
+    "description": "Subcommand of a command (Skript 2.17+)"
+  },
+  "Subcommand group": {
+    "prefix": "subcommands",
+    "body": [
+      "subcommands:",
+      "\tpermission: ${1:skript.admin}",
+      "\tsubcommand ${2:name}:",
+      "\t\ttrigger:",
+      "\t\t\t$0"
+    ],
+    "description": "Subcommands sharing entries such as permission (Skript 2.17+)"
+  },
+  "Suggestions": {
+    "prefix": "suggestions",
+    "body": [
+      "suggestions:",
+      "\tadd ${1:\"value\"} to the suggestions for the ${2:text} argument",
+      "$0"
+    ],
+    "description": "Tab completions for a command's arguments (Skript 2.17+)"
+  },
 
   "Function": {
     "prefix": "function",
@@ -139,6 +179,30 @@
     "prefix": "localfunction",
     "body": ["local function ${1:name}(${2:arg: text}):", "\t$0"],
     "description": "Function visible only to this script (Skript 2.7+)"
+  },
+
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name}:",
+      "\t${2|public,private|} ${3:field}: ${4:text}",
+      "",
+      "\tpublic ${5:method}(${6}):",
+      "\t\t$0"
+    ],
+    "description": "ClassySK class with a field and a method"
+  },
+
+  "Method": {
+    "prefix": "method",
+    "body": ["${1|public,private|} ${2:name}(${3:arg: text}) :: ${4:text}:", "\t$0"],
+    "description": "ClassySK method with a return type"
+  },
+
+  "New instance": {
+    "prefix": "newinstance",
+    "body": ["set {_${1:instance}} to new instance of ${2:Name}:", "\t${3:field}: ${4:value}", "$0"],
+    "description": "ClassySK constructor, setting fields in a section"
   },
 
   "Options": {

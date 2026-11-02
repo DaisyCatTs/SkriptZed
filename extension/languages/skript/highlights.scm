@@ -17,8 +17,8 @@
 ; WHAT IS NOT HIGHLIGHTED, ON PURPOSE
 ;
 ; Skript has no fixed keyword set: effects, conditions and expressions are
-; runtime-registered patterns (2,117 of them in core Skript alone, plus every
-; addon). This file therefore colours only what is structurally certain, and
+; runtime-registered patterns (2,703 of them in core Skript 2.17.1 alone, plus
+; every addon). This file therefore colours only what is structurally certain, and
 ; leaves ordinary statement prose uncoloured. The language server classifies the
 ; rest and paints it via LSP semantic tokens — see semantic_token_rules.json.
 ; Skript's own grammar guidance puts it well: "It is better not to highlight a
@@ -94,6 +94,16 @@
 
 (function_call
   name: (identifier) @function.call @function)
+
+; A named argument — `updateEquip(p: {_p}, e: …)`. The name is the callee's
+; parameter, and is coloured as one.
+;
+; Written without `arguments:` on purpose: with the field on both anchored
+; steps, tree-sitter matched only the *first* named argument of a call.
+(function_call
+  (identifier) @variable.parameter @variable
+  .
+  (punctuation ":"))
 
 (return_marker) @operator
 
@@ -228,6 +238,14 @@
   header: (identifier) @keyword.repeat @keyword
   (#any-of? @keyword.repeat "loop" "while" "every" "for" "each" "do"))
 
+; SkBee's `switch %object%:` / `case %objects%:` / `default:`. Only the first
+; word of a section header — no core Skript pattern starts with any of them,
+; so this cannot claim an ordinary section.
+(section
+  .
+  header: (identifier) @keyword.conditional @keyword
+  (#any-of? @keyword.conditional "switch" "case" "default"))
+
 ; `return`, `stop`, `exit` and `continue` only ever start a line.
 (statement
   .
@@ -307,7 +325,7 @@
 ;
 ; The grammar cannot classify them, but it does not need to: unlike Skript
 ; prose, Java interop has a *shape*. Both forms below occur exactly zero times
-; across the 540 scripts Skript itself ships, so matching them cannot recolour
+; across the 587 scripts Skript itself ships, so matching them cannot recolour
 ; ordinary Skript.
 ;
 ; `new HashMap()` needs nothing — the parser already reads `HashMap` as a
@@ -331,3 +349,94 @@
 ; is usually a variable: `{_item}.getItemMeta()`.
 ((word) @function.call
   (#match? @function.call "^[.][a-z]"))
+
+; ------------------------------------------------------------------ ClassySK
+;
+; ClassySK adds classes to Skript. The grammar owns their shape — `class`
+; headers, fields, method headers and `::` member access — so these are as
+; certain as a `function` header, and none of them occurs in ordinary Skript.
+
+(class
+  name: (identifier) @type)
+
+; oopsk's `struct Message:`. Its fields are entries, coloured as properties by
+; the entry rule above.
+(struct
+  name: (identifier) @type)
+
+; `public`, `private`, `static`, `const`.
+(modifier) @keyword.modifier @keyword
+
+(class_field
+  name: (identifier) @property)
+
+(class_field ":" @punctuation.delimiter)
+(class_field "=" @operator)
+
+(method
+  name: (identifier) @function.definition @function)
+
+(method
+  [
+    "("
+    ")"
+  ] @punctuation.bracket)
+
+; `self::balance`, `{_wallet}::owner`
+(member_access
+  member: (identifier) @property)
+
+; `self::reset()`, `Wallet::create()`. A `method_call` is a `function_call`
+; renamed, so the call rule above does not reach it.
+(method_call
+  name: (identifier) @function.method @function)
+
+(method_call
+  [
+    "("
+    ")"
+  ] @punctuation.bracket)
+
+(method_call
+  (identifier) @variable.parameter @variable
+  .
+  (punctuation ":"))
+
+; `Equipment::get(…)` — a static member reached through its class. ClassySK
+; requires a class name to start upper-case, which is what tells it apart from
+; an instance.
+(_
+  (identifier) @type
+  .
+  (member_access)
+  (#match? @type "^[A-Z]"))
+
+; `new instance of Wallet` / `new Wallet` — the class being constructed. The
+; language server colours this too, but only with semantic tokens on.
+(_
+  (identifier) @_new
+  .
+  (identifier) @_instance
+  .
+  (identifier) @_of
+  .
+  (identifier) @type
+  (#eq? @_new "new")
+  (#eq? @_instance "instance")
+  (#eq? @_of "of")
+  (#match? @type "^[A-Z]"))
+
+(_
+  (identifier) @_new
+  .
+  (identifier) @type
+  (#eq? @_new "new")
+  (#match? @type "^[A-Z]"))
+
+; `self` — only where a member access follows, so the word is never coloured
+; in prose that merely happens to contain it.
+(_
+  (identifier) @variable.special @variable
+  .
+  (member_access)
+  (#eq? @variable.special "self"))

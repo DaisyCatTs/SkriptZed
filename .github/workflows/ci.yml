@@ -248,7 +248,7 @@ jobs:
           fi
           echo "$asset $(stat -c%s "$asset" 2>/dev/null || stat -f%z "$asset") bytes"
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             skript-lsp-*.tar.gz

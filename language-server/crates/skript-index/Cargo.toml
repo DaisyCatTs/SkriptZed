@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Parses Skript documents and indexes their symbols and references"
 
 [dependencies]
-tree-sitter = "0.26"
+tree-sitter = "0.27"
 tree-sitter-skript = { path = "../../../tree-sitter-skript" }
 
 [dev-dependencies]

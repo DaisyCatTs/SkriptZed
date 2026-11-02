@@ -27,28 +27,40 @@ Zed tries `variable.builtin` first and falls back to `variable`.
 
 | Skript | Capture |
 |---|---|
-| structure keywords (`command`, `function`, `on`, `options`…) | `@keyword` |
+| structure keywords (`command`, `function`, `on`, `options`, `class`, `struct`…) | `@keyword` |
 | event modifier and priority | `@keyword.modifier @keyword` |
-| event name, command name, function name | `@function` (+ `.definition` / `.call`) |
-| command entry keys (`permission:`, `description:`) | `@property` |
+| ClassySK `public` / `private` / `static` / `const` | `@keyword.modifier @keyword` |
+| event name, command name | `@function` |
+| function and ClassySK method names where declared | `@function.definition @function` |
+| function calls | `@function.call @function` |
+| ClassySK method calls (`self::reset()`) | `@function.method @function` |
+| command entry keys (`permission:`, `description:`), struct fields | `@property` |
+| ClassySK fields, `::member` access | `@property` |
 | `trigger:` | `@keyword` |
-| types, `import` paths | `@type` |
+| literal-text command entry values (`description:`, `usage:`…) | `@string` |
+| types, `import` paths, class and struct names, a class before `::` or after `new` | `@type` |
 | `{variable}` | `@variable` |
 | `_` / `-` scope sigil | `@punctuation.special` |
-| `{@option}`, aliases, experiments | `@constant` |
-| `loop-player`, `event-block`, `arg-1` | `@variable.builtin @variable` |
-| function parameters, command argument specs | `@variable.parameter @variable` |
+| `self` before a member access | `@variable.special @variable` |
+| `{@option}`, aliases, experiments, parameter defaults | `@constant` |
+| `loop-player`, `event-block`, `arg-1` (also inside `%…%`) | `@variable.builtin @variable` |
+| function parameters, command argument specs, named arguments (`p:` in `f(p: …)`) | `@variable.parameter @variable` |
 | strings | `@string` |
-| `""` `%%` escapes, `&6` colour codes | `@string.escape` |
+| `""` `%%` escapes | `@string.escape` |
+| `&6` and `&#RRGGBB` colour codes | `@string.special.symbol` |
 | `<red>` `<#FF00AA>` format tags | `@string.special` |
+| `<link:…>`, `<url:…>`, `<cmd:…>` and other click tags | `@string.special.url` |
 | `%…%` delimiters | `@punctuation.special` |
 | interpolation contents | `@embedded` |
 | numbers, durations | `@number` |
 | `true` / `false` | `@boolean` |
-| `if` / `else` / `then` | `@keyword.conditional @keyword` |
-| `loop` / `while` / `every` / `for` | `@keyword.repeat @keyword` |
+| `if` / `else` / `then`, SkBee's `switch` / `case` / `default` | `@keyword.conditional @keyword` |
+| `loop` / `while` / `every` / `for` / `each` / `do` | `@keyword.repeat @keyword` |
 | `return` / `stop` / `exit` / `continue` | `@keyword.return @keyword` |
 | `is` / `and` / `or` / `not` / `contains` / `isn't` | `@keyword.operator @operator` |
+| skript-reflect `Material.DIAMOND` (enum constant) | `@constant` |
+| skript-reflect `Bukkit.getVersion` (class access) | `@type` |
+| skript-reflect `.getItemMeta` (method on a value) | `@function.call` |
 | comments, `###` blocks | `@comment` |
 
 Every root used here is defined by both Zed's bundled One theme (46 capture
@@ -109,7 +121,7 @@ Your own rules take precedence over the extension's:
 }
 ```
 
-To see what is actually being applied, run `dev: open highlights tree view` from
+To see what is being applied, run `dev: open highlights tree view` from
 the command palette.
 
 ## Checking a theme

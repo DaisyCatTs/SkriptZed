@@ -26,19 +26,41 @@ explicit about rather than burying.
   ```
 
 * **It fetches JSON over HTTPS at runtime** from `docs.skriptlang.org` and
-  `skripthub.net`, and caches it in your platform cache directory
-  (`%LOCALAPPDATA%`, `~/Library/Caches`, or `$XDG_CACHE_HOME`). Neither request
-  carries credentials, and neither sends anything about your code, your project
-  or your machine. Both can be turned off — set `addonSyntaxSource` to `"off"`
+  `skripthub.net` (and `smdocs.hapily.me` with `"platform": "minestom"`), and
+  caches it in your platform cache directory
+  (`%LOCALAPPDATA%`, `~/Library/Caches`, or `$XDG_CACHE_HOME`). No request
+  carries credentials or sends anything about your code, your project or your
+  machine. They can be turned off: set `addonSyntaxSource` to `"off"`
   and point `docsPath` at a local file.
 
 * **It reads your server directory.** Addon detection opens `.jar` files under
   `plugins/` and parses the manifest inside each one. It reads; it never writes
-  there, and it never executes anything it finds. Set `addons` to `"off"` to
+  there, and detection never executes anything it finds (but see SkAnalyzer
+  below). Set `addons` to `"off"` to
   disable it entirely.
 
 * **It executes nothing from your scripts.** Skript files are parsed, never run.
   The language server has no evaluator.
+
+* **If you enable SkAnalyzer, it starts a Java process you configured.** With
+  `analyzer.jar` set (and `analyzer.enabled` not `false`), the server runs the `java` executable and SkAnalyzer jar
+  named in your settings, which load Skript and the addon JARs listed in
+  `analyzer.plugins` (by default, the ones detected in `plugins/`). Those addon
+  JARs are Java code, so this does run them, outside a Minecraft server. It is
+  off by default; only enable it with JARs you trust.
+
+* **If you enable RCON reload, it logs in to your server and runs a command.**
+  With `rcon.enabled`, each saved script is reloaded with `skript reload` over
+  RCON, which changes what that server runs. RCON sends the password in plain
+  text and Zed stores it in plain text in your settings, so keep the RCON port
+  local (or on a private network) and never expose it to the internet. The
+  password is never written to logs or shown in messages. Off by default.
+
+* **The optional AI helper (`skript-lsp mcp`) is read-only.** The extension does
+  not register it; it only runs if you add it to Zed's `context_servers`
+  yourself. It answers questions about syntax and your project's scripts, never
+  writes a file, and never contacts a game server. Its only network use is the
+  same syntax download the language server already does.
 
 ## Reporting a vulnerability
 

@@ -13,19 +13,215 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
-## [0.2.5] — 2026-08-07
+### Added
+
+#### Skript 2.17
+
+- **Subcommands.** `subcommand <number>:` inside a command was a parse error,
+  which broke the outline and folding for the whole file. Subcommands now
+  parse, directly in a command or inside a `subcommands:` group, and show in
+  the outline under their pattern.
+- **The new command entries.** `prefix:`, `suggestions:` (also spelt
+  `tab completions:`), `subcommand` and `subcommands:` complete and hover inside
+  a command, and inside each subcommand, which takes the same entries. Hovering
+  `permission message:` says it is deprecated since 2.17: a command the player
+  may not run is no longer sent to their client, so the message is never seen.
+  Four new snippets: `commandsub`, `subcommand`, `subcommands` and
+  `suggestions`.
+
+#### Addons
+
+- **ClassySK support.** [ClassySK](https://github.com/novystar/ClassySK) adds
+  classes to Skript, and a ClassySK script used to be full of errors that could
+  not be fixed: every method, from its declaration to `self::start()` and
+  `{_bar}::play(…)`, was reported as a call to an undeclared function. Now:
+  - `class`, fields, methods and their parameters appear in the outline, and a
+    class and each method fold.
+  - Hovering a method or field shows its declaration
+    (`SmartActionBar::play(value: string, duration: timespan)`), and
+    go-to-definition and find-references follow it to the class. Members are
+    deliberately not renamed: which class `{_x}::reset()` calls is only known
+    at runtime, so renaming one class's `reset` could silently rewrite
+    another's.
+  - `{_x}` inside a method belongs to that method, so renaming it no longer
+    touches a variable of the same name in a sibling method.
+  - Formatting keeps a class body indented instead of flattening it to
+    column 0.
+  - Highlighting for `public`/`private`/`static`/`const`, field and method
+    names, `self` and `::` member access, plus `class`, `method` and
+    `newinstance` snippets.
+- **oopsk support.** `struct Message:` templates parse as structures, with
+  their fields in the outline and folding, instead of being read as an event
+  whose fields were run through the statement matcher.
+- **skript-minestom support.** Open a skript-minestom server and it is
+  recognised from its folder layout: the server loads skript-minestom's own
+  syntax and every addon its docs site publishes (skript-gui, SkCheese,
+  skript-combat and more) instead of Bukkit Skript's. `"platform"` set to
+  `"minestom"` or `"bukkit"` overrides the guess.
+- **skript-reflect custom syntax is understood.** An `effect`, `condition`,
+  `expression`, property or custom `event` your project defines, `local` ones
+  included, is read as you type. Every use of it is then coloured, completed
+  and hovered like core syntax ("Defined in `rewards.sk`, line 12"), and
+  go-to-definition jumps to the definition. The outline lists definitions as
+  their own kind instead of as events, and `local effect …:` no longer breaks
+  the parse.
+- **Addon section entries.** Inside an addon section that SkriptHub documents,
+  such as SkBee's `register shaped recipe:`, completion offers its entries
+  (`id:`, `result:`, `shape:` and the rest) with the required ones you have not written
+  yet first, and hover explains each. Lines like `result: diamond` are no
+  longer reported as unknown syntax.
+- **Check scripts against the real Skript** (opt-in, needs SkAnalyzer and
+  Java 25). Set `analyzer.jar` and each saved script is run through Skript's
+  own parser, and its errors appear as diagnostics from `SkAnalyzer`.
+  `"enabled": false` pauses it without losing the path. You install SkAnalyzer
+  and a Skratched Skript build yourself; see the README.
+- **Reload on your own server as you save** (opt-in, off by default). With
+  `rcon.enabled` and your server's RCON password, each save sends
+  `skript reload <script>` over RCON, and the errors Skript prints come back as
+  diagnostics from `Skript (server)`. Meant for a server on your machine or one
+  whose scripts folder you have mounted; see the README for what
+  `server.properties` and Skript's config need. The password is never logged.
+- **`customSyntaxPaths` accepts folders**, loading every `.json` in them.
+
+#### Editor
+
+- **Hover explains what is under the cursor.** Pointing at `{_p}'s helmet`
+  inside a `set` describes Armor Slot, not Set. A function call shows that
+  function: your own function's signature, or a built-in like `floor` with its
+  documentation, where it used to describe whatever pattern the whole line
+  matched. `self` and a class name show the class and its members, and addon
+  syntax shows examples from SkriptHub and a link to its page.
+- **Expressions inside lines are coloured, not just the line's keywords.** What
+  fills a pattern's slots, and every argument of a function call, is classified
+  too: `{_p}'s helmet`, `future event-item`, `the target entity of player`. A
+  literal-only slot such as the `helmet` in `{_p}'s helmet` reads as a type.
+  Named arguments (`updateEquip(p: {_p})`), the class in `Equipment::get(…)`
+  and SkBee's `switch`/`case`/`default` are coloured too.
+- **Variable completion.** Typing `{_` offers the local variables used in the
+  same trigger, plus the function's parameters; `{` offers those and every
+  global the project uses. A plain word works too: `vis` offers `{_visitor}`
+  ahead of any syntax. List variables complete one level at a time: after `{data::`
+  the choices are what your scripts put at that level (`%player's uuid%`,
+  `settings`) plus `*`.
+- **Colour swatches.** `&6`, `&x&f&f&5&5&5&5`, `<red>`, `<#ff5555>` and the
+  rest show the colour they produce, and picking a new one writes it back in
+  the same style.
+- **Clickable links** in `<link:…>` / `<url:…>` tags and bare URLs, comments
+  included.
+- **Argument hints for more calls.** Signature help covers ClassySK methods
+  (`Req::get(`), Skript's built-ins and addon functions, highlights the right
+  parameter for a named argument, and no longer splits a default like
+  `(1, 7)` in two. Zed hides these hints after a completion unless
+  `"show_signature_help_after_edits": true` is set.
+- **Unknown options are errors.** `{@typo}` with no matching entry in the
+  script's `options:` block is reported, with a quick fix that adds it.
+- **Wrong argument counts are errors.** `reward()` when `reward` needs a
+  player, or `giveCoins(p, 5, 6)` when it takes two, is reported, checked
+  against your own functions and Skript's built-ins. Calls whose count cannot be
+  known for certain are left alone, and a function declared more than once
+  passes if any declaration fits.
+- **`cancel event` where nothing can be cancelled.** In an event Skript's
+  documentation marks as not cancellable, such as `on join:`, it is a warning,
+  with a quick fix that removes the line. Skript refuses to load it.
+- **Local variables that are never set, or never used.** `{_x}` read in a
+  trigger that never sets it is a warning, since it is always empty there; one
+  set but never read is shown faded. Both stay quiet whenever any line could
+  explain the variable. `localVariableDiagnostics: false` turns them off.
+- **`event-` completes the event's own values.** Inside `on break:`, typing
+  `event-` offers `event-block`, `event-player` and the rest of that event's
+  values first, with their `past` and `future` forms, for core, addon and
+  custom events.
+- **Format a selection.** `editor: format selections` re-indents just the
+  selected code, widened to the whole top-level structures it touches so a
+  structure never ends up half tabs, half spaces.
+- **A blank line between structures.** Formatting puts one blank line under a
+  multi-line structure that runs straight into the next. It never removes one.
+  `formatBlankLines: false` turns it off.
+- **Every feature has a switch.** A `features` block in the settings turns off
+  hover, completion, variable completion, signature help, inlay hints,
+  semantic tokens, colours, links, folding, formatting, code actions, rename,
+  navigation, call hierarchy, the outline or diagnostics, one at a time. All
+  are on by default, and a change applies without a restart.
+- **Every setting applies without a restart.** Under `lsp.skript-lsp.settings`,
+  changing `docsPath`, `addons`, `serverPath`, `platform` or another setting
+  that decides where syntax comes from now reloads the syntax database; it used
+  to need a restart.
+- **An AI helper, for those who want one** (opt-in, never started by the
+  extension). `skript-lsp mcp` is a read-only Model Context Protocol server
+  that lets an AI agent search Skript syntax, read its documentation, classify
+  lines and list the project's functions and commands. The extension does not
+  register it with Zed, so nobody sees it who has not added it to their
+  settings; the README shows how.
+- **Proxies are honoured.** Syntax downloads follow the `HTTPS_PROXY`,
+  `HTTP_PROXY`, `ALL_PROXY` and `NO_PROXY` environment variables.
+
+### Fixed
+
+- **Settings under `lsp.skript-lsp.settings` no longer wipe the others.** They
+  replaced `initialization_options` whole, so turning one feature off there
+  silently dropped a `serverPath` set in the other block. The two are now
+  merged, the later winning key by key.
+- **A crash while typing deeply nested optional groups.** A skript-reflect
+  pattern like `effect [[[[…]]]]` thousands deep overflowed the stack and took
+  the server down. Nesting beyond 32 is now reported as an error.
+- **Hover could crash on `§`, `é` or an emoji.** A cursor position inside a
+  multi-byte character was used to slice the line.
+- **Saving with SkAnalyzer on could freeze the editor.** The check, up to a
+  minute while Java starts, held one of the server's few request slots per
+  save; a few quick saves stalled every request. It now runs in the background.
+- **A numeric `rcon.password` was shown in a warning.** An invalid setting is
+  reported with its value; the password no longer is.
+- **Files changed on disk were ignored when not open.** After a `git pull`,
+  scripts that were not open in the editor kept their old contents in the
+  index.
+- **`prefix:` is no longer offered inside a subcommand,** which Skript only
+  accepts on the command itself, and SkBee's `ingredients:` is no longer
+  reported as unknown syntax.
+- **With no settings at all, addon syntax never loaded.** A user who had not
+  configured anything got an empty addon source, so SkBee and every other
+  detected addon stayed plain, and deprecated syntax was not flagged. No
+  settings and empty settings now mean the same defaults.
+- **One bad setting no longer throws away the rest.** A single value of the
+  wrong type (`"addons": true`) used to reset every setting, the analyzer
+  included, and a misspelt key was silently ignored. Each bad or unknown key
+  is now dropped on its own, and one message names them.
+- **Hover on a SkriptHub event listed `event-event-player`.** Event values from
+  SkriptHub records already carry the `event-` prefix, and it was added again.
+- **Addon syntax containing a regex character class never matched.** A pattern
+  such as ClassySK's `<[A-Z]\w*>` was misread, so ClassySK, oopsk and packet
+  field patterns could never apply to any line.
+- **181 addon syntaxes were dropped as duplicates of core Skript.** They share
+  an internal id with a core entry (Lusk, SkQuery and SkBee all have some), and
+  were discarded as copies. They now load.
+- **`{@option}` inside a string is recognised.** It was not seen at all, so it
+  could be neither checked nor navigated.
+- **A closed file's diagnostics no longer come back.** Closing a tab cleared
+  its problems, but the next refresh (when the project finished indexing, or a
+  setting changed) put them back in the problems panel.
+- **A function header is no longer one flat colour.** The language server
+  painted the whole of `function name(p: player, s: boolean = true):` with a
+  single colour, over the grammar's separate colours for the name, parameters
+  and types. `command` headers had the same problem.
+- **Diagnostics refresh once the syntax database arrives.** A file opened
+  while the database was still downloading kept showing built-ins like
+  `floor(…)` as undeclared until it was edited.
+- **A line no addon pattern explains is no longer mislabelled.** Patterns made
+  only of optional words and one slot match any line; taking them as an answer
+  hid the function-call colouring for lines like `updateEquip(…)`.
+
+## [0.2.5] - 2026-08-07
 
 ### Added
 
 - **skript-reflect's Java calls are coloured.** `Bukkit.getVersion`,
   `Material.DIAMOND` and `{_item}.getItemMeta()` were the one thing in a `.sk`
-  file that nothing described — no Skript pattern covers them — so they sat as
+  file that nothing described (no Skript pattern covers them), so they sat as
   plain text, which in a reflect-heavy script is most of the file. They cannot
   be classified, but they have a recognisable shape, and neither form occurs
   anywhere in the 540 scripts Skript itself ships, so ordinary Skript is
   untouched. A reflect-heavy file goes from 83% to 94% coloured.
 
-## [0.2.4] — 2026-08-07
+## [0.2.4] - 2026-08-07
 
 ### Fixed
 
@@ -34,7 +230,7 @@ not belong in this file. Refactors, test additions and CI changes live in
   declared in no script, so calling one was an error. Functions registered by
   addons are covered by the same fix.
 - **Indentation is judged per structure, not per file** ([#2]). Skript infers
-  the indent unit for each top-level structure separately — 7 of the 540 scripts
+  the indent unit for each top-level structure separately: 7 of the 540 scripts
   Skript itself ships switch between tabs and spaces between structures. Mixing
   *inside* one structure is still reported.
 - **A comment no longer decides the file's indentation.** One comment aligned
@@ -47,7 +243,7 @@ not belong in this file. Refactors, test additions and CI changes live in
 [#2]: https://github.com/DaisyCatTs/SkriptZed/issues/2
 [#3]: https://github.com/DaisyCatTs/SkriptZed/issues/3
 
-## [0.2.3] — 2026-08-07
+## [0.2.3] - 2026-08-07
 
 ### Fixed
 
@@ -59,24 +255,18 @@ not belong in this file. Refactors, test additions and CI changes live in
 - Removed a styling rule for a token the language server never emits, which
   looked like configuration and could never apply.
 
-## [0.2.2] — 2026-08-07
+## [0.2.2] - 2026-08-07
 
 ### Fixed
 
 - **No more phantom "No function named `x` is declared in this project".** An
   editor opens your file the instant the server starts, before the project's
-  scripts have been read off disk — so a call to a function in a file you had
+  scripts have been read off disk, so a call to a function in a file you had
   not opened was reported as missing, and the error stayed until you edited
-  something. The check now waits until the project has actually been read, and
+  something. The check now waits until the project has been read, and
   diagnostics refresh once it has.
 
-### Added
-
-- **`node scripts/make-test-server.mjs`** builds a throwaway server directory of
-  stub plugin JARs, so the addon syntax in `examples/sample-project/addons.sk`
-  can be exercised without running a server with seven addons installed.
-
-## [0.2.1] — 2026-08-07
+## [0.2.1] - 2026-08-07
 
 ### Fixed
 
@@ -90,31 +280,29 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 - **`on right click` and `on left click` are recognised again.** Skript accepts
   a separator as a space, a hyphen or nothing, so all of `right click`,
-  `right-click` and `rightclick` are the same event — but only the last two were
+  `right-click` and `rightclick` are the same event, but only the last two were
   matching. The spaced spelling was being deleted while the pattern was
   compiled, so two of the most-written lines in Skript resolved to nothing and
   silently fell back to the generic event structure: no hover, no event values,
   no documentation. 43 patterns use that construct, including `off hand`,
   `IP banned` and `left handed`.
 
-## [0.2.0] — 2026-08-07
+## [0.2.0] - 2026-08-07
 
 ### Added
 
 - **Call hierarchy**, in the language server. Events and commands appear as
   callers alongside other functions, because in Skript they are the places a
-  function actually runs from. Two calls in one trigger collapse into one entry,
+  function runs from. Two calls in one trigger collapse into one entry,
   and a `local function`'s callers stay in its own file.
 
-  **Zed cannot show this yet** — it does not implement the call hierarchy
-  requests, so there is no menu item for it. This is listed because the server
-  answers it for any client that does ask, and so that it is not mistaken for
-  a missing feature when Zed adds support.
+  In Zed, run `call hierarchy: show incoming calls` (Zed added the call
+  hierarchy view after this release).
 - **A duplicate declaration now links to the first one.** The diagnostic on the
   second `function payout()` points back at the first, so the fix is one click
   rather than a search.
 - **`skript-lsp --version`.** Previously the binary had no flags at all, so
-  running it by hand looked like it had hung — it was waiting for LSP traffic
+  running it by hand looked like it had hung: it was waiting for LSP traffic
   on stdin. It now prints its version and exits.
 
 ### Changed
@@ -125,7 +313,7 @@ not belong in this file. Refactors, test additions and CI changes live in
   long list unscannable. Clients that do not support this still get the old
   single string.
 
-## [0.1.0] — 2026-08-07
+## [0.1.0] - 2026-08-07
 
 First release. Zed had no Skript support of any kind before this, so everything
 below is new.
@@ -143,7 +331,7 @@ below is new.
   opening a section.
 - Folding for every event, command, function, section, `options:` / `variables:`
   block and `###` comment, each with a placeholder describing what was folded.
-- A nested outline — commands contain their entries, events contain their
+- A nested outline: commands contain their entries, events contain their
   sections.
 - 61 snippets covering every structure, event, loop and common effect.
 
@@ -161,7 +349,7 @@ below is new.
 - Signature help, and inlay hints showing parameter names at call sites.
 - Occurrence highlighting for the symbol under the cursor.
 - Semantic tokens classifying effects, conditions, expressions and events.
-  Requires `"semantic_tokens": "combined"` in your Zed settings — see the README.
+  Requires `"semantic_tokens": "combined"` in your Zed settings; see the README.
 - Diagnostics: indentation Skript would reject, unclosed `###` blocks, duplicate
   declarations, calls to functions that do not exist, and deprecated syntax.
 - Formatting that re-indents from the parse tree and refuses to touch a file
@@ -170,13 +358,13 @@ below is new.
 #### Addons and syntax data
 
 - Automatic addon detection: the server finds your `plugins/` directory and
-  reads each JAR's manifest — `paper-plugin.yml` first, then `plugin.yml`, which
-  is what makes SkBee detectable — and loads syntax only for what is installed.
+  reads each JAR's manifest (`paper-plugin.yml` first, then `plugin.yml`, which
+  is what makes SkBee detectable) and loads syntax only for what is installed.
 - 2,660 core Skript patterns across 1,222 entries from `docs.skriptlang.org`,
   and 12,877 addon patterns across 168 addons from SkriptHub. Both are
   downloaded at runtime and cached, never bundled: the databases are GPL-3.0 and
   unlicensed respectively, and this project is MIT.
-- Version awareness — syntax your target Skript cannot run is labelled and
+- Version awareness: syntax your target Skript cannot run is labelled and
   sorted down, never hidden.
 - `customSyntaxPaths` for private or undocumented addons, in either the
   `docs.json` or the SkriptHub schema; the shape is detected.
@@ -216,12 +404,6 @@ below is new.
   `if plugin "Vault" is enabled:` described the generic conditional section
   rather than the condition.
 - Variables are no longer italicised in themes that style `variable.member`.
-
-#### Performance
-
-- Classifying a line is remembered, so an edit costs only the lines that
-  changed. An 800-line script went from ~145 ms per pass to ~1 ms.
-
 - Structure entries (`permission:`, `cooldown:`, `trigger:`, `options:` names)
   now classify, hover and complete. Inside a command, completion offers its
   entries rather than the effects that cannot legally appear there. Every line
@@ -229,14 +411,18 @@ below is new.
 - A space was registered as a completion trigger, so the popup was open while
   typing ordinary prose and the editor gave Enter to the completion instead of
   to a newline.
-
-- Alternatives inside a group that carry a space — `(is|are)(n't| not)`,
-  `ha(s|ve)[(n't| not)]`, `off[ |-]hand` — matched only their contracted
+- Alternatives inside a group that carry a space (`(is|are)(n't| not)`,
+  `ha(s|ve)[(n't| not)]`, `off[ |-]hand`) matched only their contracted
   spelling, so everyday conditions like `{_x} is not set` and `{_p} is IP
   banned` resolved to the wrong syntax or to nothing.
 - A structure's entries (`description:`, `prefix:`, alias and variable
   declarations) were reported as unknown syntax when that diagnostic was
   enabled, which made the setting unusable on any script with a command block.
+
+#### Performance
+
+- Classifying a line is remembered, so an edit costs only the lines that
+  changed. An 800-line script went from ~145 ms per pass to ~1 ms.
 
 ### Known limitations
 
@@ -245,20 +431,26 @@ below is new.
   distinguishes an effect from a condition; the grammar colours only what is
   structurally certain.
 - "Unknown syntax" diagnostics are off by default and should usually stay off.
-  Setting `docsPath` does **not** make them safe — see the README.
+  Setting `docsPath` does **not** make them safe; see the README.
 - Renaming a command does not update places that invoke it. In Skript a command
   is called from inside a string (`execute player command "/home"`), so
   rewriting those would mean editing arbitrary text.
 - Experimental features behind Skript's `using <experiment>` are not detected;
   `docs.json` has no field for them.
-- Removed — as opposed to deprecated — syntax is not tracked. Neither data
+- Removed (as opposed to deprecated) syntax is not tracked. Neither data
   source records when something was removed.
 - `Skellett` and `SkStuff` have no syntax data in any public source. They behave
   like any other unknown addon: silent, never an error.
-- When several published syntaxes match one line, the most specific wins — but
+- When several published syntaxes match one line, the most specific wins, but
   "specific" is scored from the pattern's mandatory words, which occasionally
   picks the wrong one. `{_x} is not set` is matched by both `Exists/Is Set` and
   the general `Comparison`, and hover shows the latter.
 
-[Unreleased]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/DaisyCatTs/SkriptZed/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/DaisyCatTs/SkriptZed/releases/tag/v0.1.0

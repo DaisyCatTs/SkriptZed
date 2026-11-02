@@ -2,9 +2,8 @@
 
 ## 1. The grammar stays in this repository
 
-An earlier version of this document said the grammar had to be split into its
-own repository before release. **That is wrong**, and following it would break a
-working configuration.
+The grammar does not need a repository of its own, and splitting it out would
+break a working configuration.
 
 Zed clones a grammar with `git remote add origin <repository>` +
 `git fetch --depth 1 origin <rev>`, then runs clang on the checked-out sources.

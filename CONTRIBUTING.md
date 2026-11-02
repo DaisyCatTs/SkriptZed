@@ -4,7 +4,7 @@ Bug reports, grammar fixes and addon syntax are all welcome.
 
 The single most useful contribution is a `.sk` snippet that Skript accepts and
 this grammar does not. If Skript itself parses the file and this grammar reports
-an `ERROR`, that is a bug regardless of how unusual the syntax looks — the
+an `ERROR`, that is a bug regardless of how unusual the syntax looks. The
 upstream corpus is full of things that look impossible and are legal.
 
 ## Prerequisites
@@ -17,7 +17,7 @@ upstream corpus is full of things that look impossible and are legal.
 
 ```sh
 rustup target add wasm32-wasip2
-cd tree-sitter-skript && npm install
+(cd tree-sitter-skript && npm install)
 ```
 
 Zed downloads **wasi-sdk 25** itself to compile the grammar. Set `WASI_SDK_PATH`
@@ -31,15 +31,29 @@ grammar needs a real commit even behind a `file://` URL:
 ```sh
 git clone https://github.com/DaisyCatTs/SkriptZed.git
 cd SkriptZed
-cd tree-sitter-skript && npm install && cd ..
+(cd tree-sitter-skript && npm install)
 rustup target add wasm32-wasip2
 node scripts/dev-setup.mjs
 ```
 
-`dev-setup.mjs` regenerates the parser, runs both grammar gates, commits
-`tree-sitter-skript/`, and rewrites `rev` in `extension.toml` to match. **Do not
-commit that rewrite** — the version checked in points at GitHub and is what every
-user installs from.
+`dev-setup.mjs`, in order:
+
+1. regenerates the parser and runs the grammar tests, then the upstream corpus
+   (skipped with a note if `vendor/skript-corpus` is absent);
+2. **commits `tree-sitter-skript/`** on your current branch as
+   `chore(grammar): dev snapshot for the Zed extension`, if it changed, so Zed
+   has a revision to fetch;
+3. rewrites the grammar's `repository`, `rev` and `path` in
+   `extension/extension.toml` to point at that local commit;
+4. if Zed's own wasi-sdk is installed, checks the grammar out into
+   `extension/grammars/skript` and compiles `skript.wasm` with the same clang
+   Zed uses, so an already-installed dev extension picks up the new grammar on
+   the next Zed restart. Without wasi-sdk it tells you to click **Rebuild**
+   instead.
+
+**Do not commit the `extension.toml` rewrite.** The version checked in points at
+GitHub and is what every user installs from. Squash or drop the snapshot
+commits before opening a pull request.
 
 Then, in Zed: command palette → **`zed: install dev extension`** → pick the
 **`extension/`** directory (not the repo root).
@@ -50,7 +64,7 @@ grammar change, or Zed keeps building the previously committed parser.
 Build the language server too, and point Zed at it:
 
 ```sh
-cd language-server && cargo build --release -p skript-lsp
+(cd language-server && cargo build --release -p skript-lsp)
 ```
 
 ```json
@@ -59,24 +73,35 @@ cd language-server && cargo build --release -p skript-lsp
 
 ## Verifying a change
 
-Everything, in order:
+Everything, in order, from the repository root:
 
 ```sh
-cd tree-sitter-skript && ./node_modules/.bin/tree-sitter test
+(cd tree-sitter-skript && ./node_modules/.bin/tree-sitter test)
 node scripts/parse-corpus.mjs --strict
-cd language-server && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
+(cd language-server && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test)
 node scripts/smoke-lsp.mjs
-cd extension && cargo build --release --target wasm32-wasip2
+node scripts/check-theme-portability.mjs
+(cd extension && cargo build --release --target wasm32-wasip2)
 ```
 
 Two traps that have already produced false passes here: `tree-sitter generate |
-head` hides a non-zero exit, and passing ~540 paths as argv silently overflows on
+head` hides a non-zero exit, and passing 587 paths as argv silently overflows on
 Windows. `scripts/parse-corpus.mjs` asserts the parsed count matches the
-discovered file count before believing any result — keep that assertion.
+discovered file count before believing any result. Keep that assertion.
+
+A third trap catches you when comparing two checkouts. The tree-sitter CLI
+caches the compiled grammar as `%LOCALAPPDATA%\tree-sitter\lib\skript.dll` on
+Windows (`~/.cache/tree-sitter/lib/` elsewhere), keyed by the grammar's name and
+file timestamps rather than its contents. Switching branches or worktrees can
+leave you testing the other checkout's parser. Delete that file before
+comparing.
 
 `node scripts/coverage.mjs` reports how much of a file the grammar and the
-language server between them actually explain. Useful for judging a highlighting
-change; it is a measurement, not a gate.
+language server between them explain. Useful for judging a highlighting change;
+it is a measurement, not a gate.
+
+`SKRIPT_LSP_BINARY=/path/to/skript-lsp` makes `smoke-lsp.mjs` and `coverage.mjs`
+test that binary instead of the local build, such as a downloaded release asset.
 
 ## Before changing the grammar
 
@@ -91,23 +116,23 @@ cd tree-sitter-skript
 node ../scripts/parse-corpus.mjs --strict
 ```
 
-The corpus is ~540 real scripts from SkriptLang's own repository. If a change
-breaks even one, that is a genuine regression — those files are what Skript users
-actually write.
+The corpus is 587 real scripts from SkriptLang's own repository. If a change
+breaks even one, that is a genuine regression: those files are what Skript users
+write.
 
 `src/parser.c` and friends are generated but committed, because Zed compiles
 them directly and never runs the CLI. CI fails if they are stale.
 
 Add a corpus test for anything new. `tree-sitter test --update` fills in the
-expected tree, but **read what it wrote** — it records whatever the parser
+expected tree, but **read what it wrote**: it records whatever the parser
 currently does, including bugs. Check the diff contains only what you intended.
 
 ## Before changing highlighting
 
 Never name a colour. See [`docs/theming.md`](docs/theming.md) for the capture map
-and the dot-prefix fallback rule.
+and the dot-prefix fallback rule, and run `node scripts/check-theme-portability.mjs`.
 
-Validate a query before shipping it — a broken one is dropped silently, and
+Validate a query before shipping it. A broken one is dropped silently, and
 `outline.scm` in particular is discarded entirely if any pattern lacks `@item` or
 `@name`:
 
@@ -129,19 +154,19 @@ cargo test
 cd .. && node scripts/smoke-lsp.mjs
 ```
 
-Run `node scripts/fetch-docs.mjs` first, or the tests that exercise every real
-pattern will skip instead of running.
+Run `node scripts/fetch-docs.mjs` and `node scripts/fetch-addons.mjs` first, or
+the tests that exercise every real pattern will skip instead of running.
 
 New LSP features need a check in `scripts/smoke-lsp.mjs`. Unit tests cover the
-pieces; only the smoke test proves the assembled server actually answers.
+pieces; only the smoke test proves the assembled server answers.
 
 ## Debugging
 
 * `zed --foreground` forwards the extension's stdout to your terminal.
 * `zed: open log` for Zed's own log, including query-compilation warnings.
 * `dev: open language server logs` for the LSP traffic.
-* `dev: open highlights tree view` shows which captures and semantic tokens are
-  actually landing on each span.
+* `dev: open highlights tree view` shows which captures and semantic tokens
+  land on each span.
 
 `skript-lsp` writes **only** protocol traffic to stdout; logs go to stderr. A
 stray `println!` in the server corrupts the message stream.
@@ -150,9 +175,9 @@ stray `println!` in the server corrupts the message stream.
 
 Match the surrounding code. A few things this codebase does on purpose:
 
-* **Comments explain *why*, not *what*.** The non-obvious constraints — Zed's ten
+* **Comments explain *why*, not *what*.** The non-obvious constraints (Zed's ten
   query files, token precedence beating match length, `#` being literal inside
-  strings — are written down where they bite, because every one of them was
+  strings) are written down where they bite, because every one of them was
   learned the hard way.
 * **Degrade, do not fail.** No network, no syntax database, no language server:
   each should cost exactly the features that need it and nothing more.

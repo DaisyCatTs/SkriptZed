@@ -14,7 +14,9 @@ version = "0.2.5"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/DaisyCatTs/SkriptZed"
-rust-version = "1.80"
+# The real minimum: `tree-sitter-language` 0.1.9 in the lockfile needs 1.90,
+# and the code itself uses `as_chunks` (1.88) and `is_multiple_of` (1.87).
+rust-version = "1.90"
 
 [workspace.dependencies]
 skript-syntax = { path = "crates/skript-syntax" }

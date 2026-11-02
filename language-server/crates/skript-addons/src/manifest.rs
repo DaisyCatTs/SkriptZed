@@ -207,7 +207,7 @@ loadbefore: [skript-mirror]
         assert_eq!(manifest.version, "3.6.0");
         assert!(
             manifest.is_skript_addon(),
-            "SkBee must be detected — it is the most popular addon and ships \
+            "SkBee must be detected: it is the most popular addon and ships \
              only paper-plugin.yml. Dependencies found: {:?}",
             manifest.dependencies
         );

@@ -79,6 +79,36 @@ fn every_category_deserialises_including_properties() {
     );
 }
 
+/// Experiments publish their pattern under `pattern`, singular, so reading
+/// only `patterns` left every one of them with none.
+#[test]
+fn experiments_carry_their_patterns() {
+    let Some(docs) = skript_docs() else {
+        eprintln!("skipping: run node scripts/fetch-docs.mjs");
+        return;
+    };
+
+    assert!(!docs.experiments.is_empty(), "no experiments published");
+    let bare: Vec<&str> = docs
+        .experiments
+        .iter()
+        .filter(|entry| entry.patterns.is_empty())
+        .map(|entry| entry.id.as_str())
+        .collect();
+    assert!(bare.is_empty(), "experiments without a pattern: {bare:?}");
+
+    let for_loops = docs
+        .experiments
+        .iter()
+        .find(|entry| entry.id == "for loop")
+        .expect("the for-loop experiment is published");
+    let pattern = skript_syntax::Pattern::parse(&for_loops.patterns[0]).unwrap();
+    let mut index = skript_syntax::PatternIndex::new();
+    index.insert(pattern, ());
+    index.finish();
+    assert!(index.best_match("for loops").is_some());
+}
+
 #[test]
 fn since_yields_a_minimum_version_for_almost_every_entry() {
     let Some(docs) = skript_docs() else {
@@ -121,7 +151,15 @@ fn parsed_versions_stay_within_skripts_real_range() {
         return;
     };
 
-    let current = Version::new(2, 16, 1);
+    // The database's own version, not a constant. A hard-coded 2.16.1 here
+    // started failing the day Skript 2.17 shipped, with the parser unchanged:
+    // the first `since: 2.17` entry read as "newer than the database".
+    let current = Version::parse(&docs.source.version).unwrap_or_else(|| {
+        panic!(
+            "docs.json names an unparseable version: {:?}",
+            docs.source.version
+        )
+    });
     for (category, entry) in docs.all() {
         let Some(version) = parse_since(&entry.since.joined()) else {
             continue;
@@ -344,10 +382,35 @@ fn merging_prefers_skripts_own_entry_over_skripthubs_copy() {
         .filter(|entry| entry.id == "ExprVersion")
         .collect();
 
-    assert_eq!(matches.len(), 1, "ExprVersion was duplicated by the merge");
+    // Exactly one core-owned entry: the official one, not SkriptHub's copy.
+    let core: Vec<_> = matches
+        .iter()
+        .filter(|entry| {
+            entry
+                .addon
+                .as_ref()
+                .is_none_or(|addon| addon.name == "Skript")
+        })
+        .collect();
+    assert_eq!(
+        core.len(),
+        1,
+        "core ExprVersion was duplicated by the merge"
+    );
     assert!(
-        matches[0].addon.is_none(),
+        core[0].addon.is_none(),
         "the merge kept SkriptHub's copy instead of Skript's own"
+    );
+
+    // Addons reuse the same class name for unrelated syntax — Lusk's
+    // `[the] version[s] %strings%` among them. Those are not copies of core
+    // Skript, and an id-only merge used to drop every one of them.
+    assert!(
+        matches.iter().any(|entry| entry
+            .addon
+            .as_ref()
+            .is_some_and(|addon| addon.name == "Lusk")),
+        "Lusk's own ExprVersion was dropped as a duplicate of core Skript's"
     );
 }
 

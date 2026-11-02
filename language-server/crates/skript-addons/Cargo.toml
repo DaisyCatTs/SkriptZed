@@ -9,6 +9,9 @@ description = "Detects which Skript addons a project's server has installed"
 [dependencies]
 # A JAR is a ZIP. Only deflate is needed — plugin manifests are tiny — and the
 # default feature set drags in several compression backends we never use.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# Not plain `deflate`: that also pulls in zopfli, a compressor, and JARs are only
+# read here. The flate2 backend is named because zip turns flate2's defaults
+# off, leaving none — this crate would then fail to build on its own.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]

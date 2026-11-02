@@ -5,13 +5,14 @@
 //! it is downloaded and cached at runtime. See [`source`] for the details and
 //! the fallback behaviour when there is no network.
 
+pub mod examples;
 pub mod hover;
 pub mod model;
 pub mod skripthub;
 pub mod source;
 pub mod version;
 
-pub use model::{Category, Docs, Entry, Reference};
+pub use model::{Category, Docs, Entry, Reference, SectionEntry};
 pub use source::{DocsSource, LoadError};
 
 use std::collections::HashMap;
@@ -49,11 +50,57 @@ pub struct Catalog {
     /// Skript is repetitive enough that the hit rate is high even within a
     /// single pass: `stop`, `cancel event` and `return` recur constantly.
     cache: std::sync::RwLock<ClassificationCache>,
+    /// Syntax the project's own scripts define. See
+    /// [`Catalog::set_workspace_entries`].
+    workspace: Overlay,
+    /// The final answer of [`Catalog::classify_line`] while an overlay is
+    /// installed. Cleared whenever the overlay changes; `cache` is not, which
+    /// is what keeps editing a custom effect's pattern from re-matching every
+    /// line against the 2,000-odd core patterns.
+    merged: std::sync::RwLock<MergedCache>,
 }
 
-/// What [`Catalog::classify_line`] has already worked out, keyed by the line
-/// text and the role it was asked about.
-type ClassificationCache = HashMap<(String, LineRole), Option<(EntryId, Match)>>;
+/// What [`Catalog::classify_line`] has already worked out against the main
+/// index, keyed by the line text and the role it was asked about.
+type ClassificationCache = HashMap<(String, LineRole), Option<Ranked>>;
+
+/// [`Catalog::classify_line`]'s final answers while an overlay is installed.
+type MergedCache = HashMap<(String, LineRole), Option<(EntryId, Match)>>;
+
+/// Workspace-defined syntax, kept in its own small index.
+///
+/// Folding it into the main index would mean rebuilding the whole catalog,
+/// about a second with addons loaded, whenever someone edits a skript-reflect
+/// pattern. Its ids continue each category's numbering after the main
+/// database, so an `EntryId` stays one plain number and every caller keeps
+/// working unchanged.
+struct Overlay {
+    docs: Docs,
+    index: PatternIndex<EntryId>,
+    tag: Option<u64>,
+}
+
+/// A classification with what it takes to compare it against one from the
+/// other index: how early in [`Catalog::resolve`] it was found, and its score.
+#[derive(Clone)]
+struct Ranked {
+    stage: usize,
+    score: i32,
+    id: EntryId,
+    matched: Match,
+}
+
+impl Ranked {
+    /// Whether `self` should be preferred over `other`. An earlier stage wins;
+    /// within a stage the higher score does, and a tie goes to `self`.
+    fn beats(&self, other: &Ranked) -> bool {
+        self.stage < other.stage || (self.stage == other.stage && self.score >= other.score)
+    }
+
+    fn into_pair(self) -> (EntryId, Match) {
+        (self.id, self.matched)
+    }
+}
 
 /// Upper bound on remembered lines.
 ///
@@ -62,6 +109,20 @@ type ClassificationCache = HashMap<(String, LineRole), Option<(EntryId, Match)>>
 /// cache is cleared rather than evicted one by one: classification is cheap
 /// enough that a rebuild costs less than tracking recency.
 const CACHE_LIMIT: usize = 50_000;
+
+/// Stores one classification in a memo, emptying it first when it is full.
+fn remember<V>(
+    memo: &std::sync::RwLock<HashMap<(String, LineRole), V>>,
+    key: (String, LineRole),
+    value: V,
+) {
+    if let Ok(mut memo) = memo.write() {
+        if memo.len() >= CACHE_LIMIT {
+            memo.clear();
+        }
+        memo.insert(key, value);
+    }
+}
 
 impl Catalog {
     pub fn build(docs: Docs) -> Self {
@@ -101,6 +162,12 @@ impl Catalog {
             unparsable_patterns,
             target_version: None,
             cache: std::sync::RwLock::new(HashMap::new()),
+            workspace: Overlay {
+                docs: Docs::default(),
+                index: PatternIndex::new(),
+                tag: None,
+            },
+            merged: std::sync::RwLock::new(HashMap::new()),
         }
     }
 
@@ -122,20 +189,39 @@ impl Catalog {
     }
 
     pub fn entry(&self, id: EntryId) -> Option<&Entry> {
-        self.docs.entries(id.category).get(id.index)
+        let base = self.docs.entries(id.category);
+        match id.index.checked_sub(base.len()) {
+            None => base.get(id.index),
+            Some(own) => self.workspace.docs.entries(id.category).get(own),
+        }
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<(EntryId, &Entry)> {
-        let id = *self.by_name.get(&name.to_ascii_lowercase())?;
-        Some((id, self.entry(id)?))
+        if let Some(id) = self.by_name.get(&name.to_ascii_lowercase()) {
+            return Some((*id, self.entry(*id)?));
+        }
+        // The overlay is a few dozen entries at most; a scan is cheaper than
+        // keeping a second map in step with it.
+        self.workspace_entries()
+            .find(|(_, entry)| entry.name.eq_ignore_ascii_case(name))
     }
 
     /// Classifies a line, best match first.
     pub fn classify(&self, line: &str) -> Vec<(EntryId, Match)> {
-        self.index
-            .matches(line)
+        // The project's own syntax first, so that an equal score resolves to
+        // it, as it does in `classify_line`; the sort is stable.
+        let mut ranked: Vec<(i32, EntryId, Match)> = self
+            .workspace
+            .index
+            .matches_scored(line)
             .into_iter()
-            .map(|(id, matched)| (*id, matched))
+            .chain(self.index.matches_scored(line))
+            .map(|(score, id, matched)| (score, *id, matched))
+            .collect();
+        ranked.sort_by_key(|(score, _, _)| std::cmp::Reverse(*score));
+        ranked
+            .into_iter()
+            .map(|(_, id, matched)| (id, matched))
             .collect()
     }
 
@@ -152,24 +238,43 @@ impl Catalog {
     /// that genuinely have no structural context.
     pub fn classify_line(&self, line: &str, role: LineRole) -> Option<(EntryId, Match)> {
         let code = line.trim_end().trim_end_matches(':').trim_end();
-
         let key = (code.to_string(), role);
+        if self.workspace.index.is_empty() {
+            return self.classify_main(key).map(Ranked::into_pair);
+        }
+
+        if let Ok(merged) = self.merged.read() {
+            if let Some(hit) = merged.get(&key) {
+                return hit.clone();
+            }
+        }
+        let main = self.classify_main(key.clone());
+        let own = self.resolve(&self.workspace.index, code, role);
+        // The project's own syntax wins a tie: the user wrote it for exactly
+        // this line, and skript-reflect parses `local` syntax first.
+        let answer = match (own, main) {
+            (Some(own), Some(main)) => Some(if own.beats(&main) { own } else { main }),
+            (own, main) => own.or(main),
+        }
+        .map(Ranked::into_pair);
+        remember(&self.merged, key, answer.clone());
+        answer
+    }
+
+    /// [`Catalog::resolve`] against the main index, memoised.
+    fn classify_main(&self, key: (String, LineRole)) -> Option<Ranked> {
         if let Ok(cache) = self.cache.read() {
             if let Some(hit) = cache.get(&key) {
                 return hit.clone();
             }
         }
-        let answer = self.classify_line_uncached(code, role);
-        if let Ok(mut cache) = self.cache.write() {
-            if cache.len() >= CACHE_LIMIT {
-                cache.clear();
-            }
-            cache.insert(key, answer.clone());
-        }
+        let answer = self.resolve(&self.index, &key.0, key.1);
+        remember(&self.cache, key, answer.clone());
         answer
     }
 
-    fn classify_line_uncached(&self, code: &str, role: LineRole) -> Option<(EntryId, Match)> {
+    /// The best classification `index` offers for a whole line in `role`.
+    fn resolve(&self, index: &PatternIndex<EntryId>, code: &str, role: LineRole) -> Option<Ranked> {
         // Skript's event structure wraps every event pattern in
         // `[on] [cancelled|…] <.+> [with priority …]` before matching, so a
         // registered event's own pattern never contains the `on`. Without
@@ -177,7 +282,7 @@ impl Catalog {
         // generic structure — never `first (join|login)` and its documentation.
         if role.allows(Category::Event) {
             if let Some((bare, offset)) = strip_event_wrapper(code) {
-                if let Some(hit) = self.shifted(bare, &[Category::Event], offset) {
+                if let Some(hit) = self.shifted(index, bare, &[Category::Event], offset, 0) {
                     return Some(hit);
                 }
             }
@@ -191,7 +296,7 @@ impl Catalog {
         // this accounted for 16 of the 20 entries that matched none of them.
         if role.allows(Category::Condition) {
             if let Some((bare, offset)) = strip_condition_keyword(code) {
-                if let Some(hit) = self.shifted(bare, &[Category::Condition], offset) {
+                if let Some(hit) = self.shifted(index, bare, &[Category::Condition], offset, 1) {
                     return Some(hit);
                 }
             }
@@ -200,13 +305,25 @@ impl Catalog {
         // Matched once and filtered per tier. Running the matcher again for each
         // tier would triple the cost of the hottest call in the server for an
         // answer already sitting in this list.
-        let ranked = self.index.matches(code);
-        role.tiers().iter().find_map(|tier| {
-            ranked
-                .iter()
-                .find(|(id, _)| tier.contains(&id.category))
-                .map(|(id, matched)| (**id, matched.clone()))
-        })
+        let ranked = index.matches_scored(code);
+        let explained_only = role.needs_explained_text();
+        role.tiers()
+            .iter()
+            .enumerate()
+            .find_map(|(tier_rank, tier)| {
+                ranked
+                    .iter()
+                    .find(|(_, id, matched)| {
+                        tier.contains(&id.category)
+                            && (!explained_only || matched.explains_text(code))
+                    })
+                    .map(|(score, id, matched)| Ranked {
+                        stage: 2 + tier_rank,
+                        score: *score,
+                        id: **id,
+                        matched: matched.clone(),
+                    })
+            })
     }
 
     /// A match against `bare`, with its captures moved back onto the full line.
@@ -214,13 +331,25 @@ impl Catalog {
     /// Both wrapper-stripping paths need this: the captures come back relative
     /// to the stripped text, and every caller — semantic tokens especially —
     /// indexes them against the original.
-    fn shifted(&self, bare: &str, allowed: &[Category], offset: usize) -> Option<(EntryId, Match)> {
-        let (id, mut matched) = self.first_in(bare, allowed)?;
+    fn shifted(
+        &self,
+        index: &PatternIndex<EntryId>,
+        bare: &str,
+        allowed: &[Category],
+        offset: usize,
+        stage: usize,
+    ) -> Option<Ranked> {
+        let (score, id, mut matched) = self.first_in(index, bare, allowed)?;
         for capture in &mut matched.captures {
             capture.start += offset;
             capture.end += offset;
         }
-        Some((id, matched))
+        Some(Ranked {
+            stage,
+            score,
+            id,
+            matched,
+        })
     }
 
     /// The best match whose category is one of `allowed`.
@@ -228,21 +357,25 @@ impl Catalog {
     /// Filtering after ranking rather than before keeps the specificity order
     /// intact across categories: `allowed` is a membership test, not a priority
     /// list.
-    fn first_in(&self, line: &str, allowed: &[Category]) -> Option<(EntryId, Match)> {
-        let ranked = self.index.matches_scored(line);
+    fn first_in(
+        &self,
+        index: &PatternIndex<EntryId>,
+        line: &str,
+        allowed: &[Category],
+    ) -> Option<(i32, EntryId, Match)> {
+        let ranked = index.matches_scored(line);
         let mut best: Option<(i32, EntryId, Match)> = None;
 
         for (score, id, matched) in ranked {
-            if !allowed.contains(&id.category) {
+            // Only ever called for a whole line minus its keyword, so the
+            // catch-all rule of `LineRole::needs_explained_text` applies.
+            if !allowed.contains(&id.category) || !matched.explains_text(line) {
                 continue;
             }
             match &best {
                 // Nothing yet, or this pattern is strictly more specific.
                 None => best = Some((score, *id, matched)),
-                Some((top, top_id, _)) if score > *top => {
-                    let _ = top_id;
-                    best = Some((score, *id, matched));
-                }
+                Some((top, _, _)) if score > *top => best = Some((score, *id, matched)),
                 // Equally specific: core Skript wins. With 168 addons loaded,
                 // `send "hi" to player` otherwise resolved to an addon's
                 // "send bungee player to server" rather than to Message —
@@ -263,18 +396,19 @@ impl Catalog {
             }
         }
 
-        best.map(|(_, id, matched)| (id, matched))
+        best
     }
 
-    /// Entries in `category` whose name or patterns contain `query`.
+    /// Entries in `category` whose name or patterns contain `query`, the
+    /// project's own syntax included.
     ///
     /// Deliberately simple substring matching: the LSP client does the fuzzy
     /// ranking, and doing it twice fights the editor.
     pub fn search(&self, category: Category, query: &str) -> Vec<(EntryId, &Entry)> {
         let needle = query.to_ascii_lowercase();
-        self.docs
-            .entries(category)
-            .iter()
+        let base = self.docs.entries(category);
+        base.iter()
+            .chain(self.workspace.docs.entries(category))
             .enumerate()
             .filter(|(_, entry)| {
                 needle.is_empty()
@@ -286,6 +420,84 @@ impl Catalog {
             })
             .map(|(index, entry)| (EntryId { category, index }, entry))
             .collect()
+    }
+
+    /// Replaces the syntax the project's own scripts define.
+    ///
+    /// skript-reflect lets a script declare effects, expressions, conditions
+    /// and events; those lines are as much a part of the language as anything
+    /// in `docs.json`, but they change as the user types. They live in a small
+    /// index of their own, so installing them costs a few dozen pattern parses
+    /// and never a rebuild of the main catalog.
+    ///
+    /// `tag` identifies the set: the caller computes it from whatever it
+    /// considers significant, and skips the call when
+    /// [`Catalog::workspace_tag`] already matches. A freshly built catalog has
+    /// no tag, so a reload is picked up on the next comparison.
+    pub fn set_workspace_entries(
+        &mut self,
+        entries: impl IntoIterator<Item = (Category, Entry)>,
+        tag: u64,
+    ) {
+        let mut docs = Docs::default();
+        for (category, entry) in entries {
+            docs.push(category, entry);
+        }
+        let mut index = PatternIndex::new();
+        for category in Category::ALL.iter().copied() {
+            let first = self.docs.entries(category).len();
+            for (position, entry) in docs.entries(category).iter().enumerate() {
+                let id = EntryId {
+                    category,
+                    index: first + position,
+                };
+                // An unparsable pattern is one the user is halfway through
+                // typing; it simply matches nothing until it parses.
+                for pattern in entry.patterns.iter().filter_map(|p| Pattern::parse(p).ok()) {
+                    index.insert(pattern, id);
+                }
+            }
+        }
+        index.finish();
+        self.workspace = Overlay {
+            docs,
+            index,
+            tag: Some(tag),
+        };
+        if let Ok(merged) = self.merged.get_mut() {
+            merged.clear();
+        }
+    }
+
+    /// The tag passed to the last [`Catalog::set_workspace_entries`].
+    pub fn workspace_tag(&self) -> Option<u64> {
+        self.workspace.tag
+    }
+
+    /// Whether `id` names syntax the project defines rather than the database.
+    pub fn is_workspace(&self, id: EntryId) -> bool {
+        id.index >= self.docs.entries(id.category).len()
+    }
+
+    /// Every entry the project defines, with its id.
+    pub fn workspace_entries(&self) -> impl Iterator<Item = (EntryId, &Entry)> {
+        Category::ALL.iter().copied().flat_map(move |category| {
+            let first = self.docs.entries(category).len();
+            self.workspace
+                .docs
+                .entries(category)
+                .iter()
+                .enumerate()
+                .map(move |(position, entry)| {
+                    (
+                        EntryId {
+                            category,
+                            index: first + position,
+                        },
+                        entry,
+                    )
+                })
+        })
     }
 
     /// Renders the hover card for an entry.
@@ -311,6 +523,10 @@ pub enum LineRole {
     TopLevel,
     /// Indented. A statement inside a trigger or section body.
     Statement,
+    /// Part of a line: what fills a `%slot%` of an already-matched pattern, or
+    /// a function argument. Only an expression can sit there, which is exactly
+    /// the position where the catch-alls described above are honest.
+    Expression,
     /// Position unknown — a fragment, or a caller with no tree to consult.
     Any,
 }
@@ -338,8 +554,20 @@ impl LineRole {
         match self {
             LineRole::TopLevel => &[&[Category::Structure], &[Category::Event]],
             LineRole::Statement => &[&[Category::Effect, Category::Section, Category::Condition]],
+            LineRole::Expression => &[&[Category::Expression]],
             LineRole::Any => &[Category::ALL],
         }
+    }
+
+    /// Whether a match must spell out some of the line to count here.
+    ///
+    /// A whole line is only explained by a pattern that says something about
+    /// it. Skript registers the implicit conditional as `implicit:<.+>`, and
+    /// once parse tags were read correctly that section matched every
+    /// indented line, so nothing could be reported as unknown syntax. Inside a
+    /// slot (`Expression`) the catch-alls are honest, so they stay.
+    fn needs_explained_text(self) -> bool {
+        matches!(self, LineRole::TopLevel | LineRole::Statement)
     }
 
     fn allows(self, category: Category) -> bool {
@@ -463,6 +691,93 @@ mod tests {
             .classify_best("stop")
             .expect("`stop` should classify");
         assert_eq!(id.category, Category::Effect);
+    }
+
+    fn custom(name: &str, patterns: &[&str]) -> Entry {
+        Entry {
+            id: format!("custom:{name}"),
+            name: name.into(),
+            patterns: patterns.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// skript-reflect syntax defined in the project classifies like any other,
+    /// without rebuilding the catalog, and its ids resolve back to the entry.
+    #[test]
+    fn workspace_entries_classify_alongside_the_database() {
+        let mut catalog = Catalog::build(fallback_docs());
+        assert!(catalog
+            .classify_line("greet player", LineRole::Statement)
+            .is_none());
+
+        catalog.set_workspace_entries(
+            [
+                (Category::Effect, custom("greet", &["[the] greet %player%"])),
+                (
+                    Category::Event,
+                    custom("greeting", &["greeting [of] %player%"]),
+                ),
+                (Category::Expression, custom("answer", &["[the] answer"])),
+            ],
+            1,
+        );
+        assert_eq!(catalog.workspace_tag(), Some(1));
+
+        let (id, _) = catalog
+            .classify_line("greet player", LineRole::Statement)
+            .expect("the custom effect");
+        assert!(catalog.is_workspace(id));
+        assert_eq!(catalog.entry(id).unwrap().name, "greet");
+
+        // The `on` wrapper is undone for custom events exactly as for core ones.
+        let (id, matched) = catalog
+            .classify_line("on greeting of player:", LineRole::TopLevel)
+            .expect("the custom event");
+        assert_eq!(catalog.entry(id).unwrap().name, "greeting");
+        let slot = &matched.captures[0];
+        assert_eq!(&"on greeting of player"[slot.start..slot.end], "player");
+
+        let (id, _) = catalog
+            .classify_line("the answer", LineRole::Expression)
+            .expect("the custom expression");
+        assert_eq!(id.category, Category::Expression);
+
+        // Core syntax is untouched, and completion sees the project's entries.
+        assert!(catalog.classify_line("stop", LineRole::Statement).is_some());
+        assert!(catalog
+            .search(Category::Effect, "")
+            .iter()
+            .any(|(_, entry)| entry.name == "greet"));
+        assert_eq!(catalog.workspace_entries().count(), 3);
+        assert_eq!(
+            catalog.find_by_name("Greet").map(|(i, _)| i.category),
+            Some(Category::Effect)
+        );
+    }
+
+    /// Replacing the set must forget answers given under the old one.
+    #[test]
+    fn replacing_workspace_entries_invalidates_earlier_answers() {
+        let mut catalog = Catalog::build(fallback_docs());
+        catalog.set_workspace_entries([(Category::Effect, custom("a", &["wave at %player%"]))], 1);
+        assert!(catalog
+            .classify_line("wave at player", LineRole::Statement)
+            .is_some());
+
+        catalog.set_workspace_entries([(Category::Effect, custom("a", &["wave to %player%"]))], 2);
+        assert!(catalog
+            .classify_line("wave at player", LineRole::Statement)
+            .is_none());
+        assert!(catalog
+            .classify_line("wave to player", LineRole::Statement)
+            .is_some());
+
+        catalog.set_workspace_entries([], 3);
+        assert!(catalog
+            .classify_line("wave to player", LineRole::Statement)
+            .is_none());
+        assert!(catalog.classify_line("stop", LineRole::Statement).is_some());
     }
 
     #[test]

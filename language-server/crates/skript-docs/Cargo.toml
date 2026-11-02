@@ -10,7 +10,10 @@ description = "Typed model, runtime fetch and cache for Skript's published docs.
 skript-syntax = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+# rustls on ring with the bundled webpki roots: no OpenSSL/native-tls, so the
+# musl release targets cross-build with cargo-zigbuild, and no aws-lc-rs, which
+# would need cmake and a C toolchain per target.
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 
 [dev-dependencies]
 skript-syntax = { workspace = true }

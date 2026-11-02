@@ -33,7 +33,7 @@ pub(crate) struct Token {
     pub end: usize,
 }
 
-/// What a `%…%` slot captured.
+/// What a `%…%` slot, or a `<regex>` hole, captured.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotCapture {
     pub slot: Slot,
@@ -41,6 +41,14 @@ pub struct SlotCapture {
     pub text: String,
     pub start: usize,
     pub end: usize,
+    /// A `<regex>` hole rather than a slot; `slot` is then empty.
+    ///
+    /// Recorded so a caller can tell what a regex swallowed apart from the
+    /// pattern's own words. Without it, ClassySK's `[a] new [instance of]
+    /// <[A-Z]\w*>` painted the class name as literal text, so colouring had
+    /// to throw away every match that used a regex. Ranking ignores these:
+    /// see `literal_coverage`.
+    pub regex: bool,
 }
 
 /// A successful match.
@@ -49,12 +57,47 @@ pub struct Match {
     pub captures: Vec<SlotCapture>,
 }
 
+impl Match {
+    /// Non-whitespace bytes of `line` that the pattern spelled out itself,
+    /// rather than leaving to a slot or a regex hole.
+    pub fn literal_coverage(&self, line: &str) -> usize {
+        let non_space = |text: &str| {
+            text.bytes()
+                .filter(|byte| !byte.is_ascii_whitespace())
+                .count()
+        };
+        let captured: usize = self
+            .captures
+            .iter()
+            .filter_map(|capture| line.get(capture.start..capture.end))
+            .map(non_space)
+            .sum();
+        non_space(line).saturating_sub(captured)
+    }
+
+    /// Whether the pattern accounted for any of `line` with its own words.
+    ///
+    /// A match that explains nothing is a catch-all: Skript's implicit
+    /// conditional is registered as `implicit:<.+>`, and it matches every
+    /// line there is.
+    pub fn explains_text(&self, line: &str) -> bool {
+        self.literal_coverage(line) > 0
+    }
+}
+
 /// Splits a line into tokens, keeping strings, variables and interpolations
 /// whole.
 pub(crate) fn tokenize(line: &str) -> Vec<Token> {
     let bytes = line.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0;
+    let mut push = |start: usize, end: usize| {
+        tokens.push(Token {
+            text: line[start..end].to_lowercase(),
+            start,
+            end,
+        });
+    };
 
     while index < bytes.len() {
         let ch = bytes[index];
@@ -66,16 +109,24 @@ pub(crate) fn tokenize(line: &str) -> Vec<Token> {
 
         let start = index;
         match ch {
-            b'"' => index = skip_delimited(bytes, index, b'"', b'"'),
+            b'"' => index = skip_string(bytes, index),
             b'{' => index = skip_delimited(bytes, index, b'{', b'}'),
             b'%' => index = skip_delimited(bytes, index, b'%', b'%'),
             _ => {
+                // Only a `%` that starts a token opens an interpolation; one
+                // glued to a word is a percent sign. Breaking the word there
+                // made `assert 1_23_4% is 1234/100` open an "interpolation"
+                // that ran into the string and swallowed the `is`.
                 while index < bytes.len()
                     && !bytes[index].is_ascii_whitespace()
-                    && !matches!(bytes[index], b'"' | b'{' | b'%')
+                    && !matches!(bytes[index], b'"' | b'{')
                 {
                     index += 1;
                 }
+                for (from, to) in sub_word_ranges(&line[start..index]) {
+                    push(start + from, start + to);
+                }
+                continue;
             }
         }
 
@@ -83,19 +134,105 @@ pub(crate) fn tokenize(line: &str) -> Vec<Token> {
         if index == start {
             index += 1;
         }
-
-        tokens.push(Token {
-            text: line[start..index].to_ascii_lowercase(),
-            start,
-            end: index,
-        });
+        push(start, index);
     }
 
     tokens
 }
 
-/// Consumes a delimited run, tolerating nesting for `{}` and the doubled-quote
-/// escape Skript uses inside strings.
+/// The words of a pattern literal, cut exactly as [`tokenize`] cuts a line.
+///
+/// Both sides have to agree on where a word ends, or a literal can never equal
+/// a token: see [`sub_word_ranges`].
+pub(crate) fn sub_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split_whitespace().flat_map(|word| {
+        sub_word_ranges(word)
+            .into_iter()
+            .map(move |(from, to)| &word[from..to])
+    })
+}
+
+/// Where one whitespace-free word splits into separately matched pieces.
+///
+/// Skript writes a lot of punctuation flush against a slot: `%entities%'[s]
+/// custom name` (332 core patterns and 1,934 addon ones), `by x %number%, y
+/// %number%`, `chance of %number%[\%]`. The line then has `victim's`, `45,` or
+/// `10%` as one word, a slot cannot take half a token, and none of those
+/// patterns could match unless the thing before the punctuation happened to be
+/// a `{variable}` (whose closing brace already ends a token). So a comma always
+/// stands alone, and a trailing `'s`, `'` or `%` is cut off its word.
+fn sub_word_ranges(word: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (at, ch) in word.char_indices() {
+        if ch == ',' {
+            push_piece(word, start, at, &mut out);
+            out.push((at, at + 1));
+            start = at + 1;
+        }
+    }
+    push_piece(word, start, word.len(), &mut out);
+    out
+}
+
+fn push_piece(word: &str, start: usize, end: usize, out: &mut Vec<(usize, usize)>) {
+    if start >= end {
+        return;
+    }
+    let piece = &word[start..end];
+    let suffix = if piece.len() > 2 && (piece.ends_with("'s") || piece.ends_with("'S")) {
+        2
+    } else if piece.len() > 1 && (piece.ends_with('\'') || piece.ends_with('%')) {
+        1
+    } else {
+        0
+    };
+    if suffix == 0 {
+        out.push((start, end));
+    } else {
+        out.push((start, end - suffix));
+        out.push((end - suffix, end));
+    }
+}
+
+/// Consumes a quoted string, including any `%…%` interpolation inside it.
+///
+/// An interpolation is an expression and may hold quotes of its own:
+/// Skript's tests write `"%formatted "<green><bold>Hello world!"%"`. Ending
+/// the string at the first inner quote split it into fragments that pattern
+/// literals could then line up with.
+fn skip_string(bytes: &[u8], open: usize) -> usize {
+    let mut index = open + 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' if bytes.get(index + 1) == Some(&b'"') => index += 2,
+            b'"' => return index + 1,
+            b'%' if bytes.get(index + 1) == Some(&b'%') => index += 2,
+            // An unclosed `%` is Skript's error to report; read it as text.
+            b'%' => index = interpolation_end(bytes, index).unwrap_or(index + 1),
+            _ => index += 1,
+        }
+    }
+    index
+}
+
+/// The index just past the `%` closing the interpolation opened at `open`.
+fn interpolation_end(bytes: &[u8], open: usize) -> Option<usize> {
+    let (mut depth, mut in_string) = (0usize, false);
+    for (index, &byte) in bytes.iter().enumerate().skip(open + 1) {
+        match byte {
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => depth = depth.saturating_sub(1),
+            b'%' if !in_string && depth == 0 => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Consumes a delimited run, tolerating nesting for `{}` and the doubled
+/// escape (`%%`) for an interpolation.
 fn skip_delimited(bytes: &[u8], mut index: usize, open: u8, close: u8) -> usize {
     let nests = open != close;
     let mut depth = 0usize;
@@ -173,7 +310,7 @@ fn min_tokens(nodes: &[Node], cont: Option<&Cont<'_, '_>>) -> usize {
     let here: usize = nodes
         .iter()
         .map(|node| match node {
-            Node::Literal(text) => text.split_whitespace().count(),
+            Node::Literal(text) => sub_words(text).count(),
             Node::Optional(_) => 0,
             Node::Choice(branches) => branches
                 .iter()
@@ -215,7 +352,7 @@ impl State<'_> {
         match node {
             Node::Literal(text) => {
                 let mut cursor = pos;
-                for word in text.split_whitespace() {
+                for word in sub_words(text) {
                     if self.tokens.get(cursor).map(|t| t.text.as_str()) != Some(word) {
                         return None;
                     }
@@ -289,16 +426,15 @@ impl State<'_> {
             let end = pos + take;
             let mark = captures.len();
 
-            if let Some(slot) = slot {
-                let start_byte = self.tokens[pos].start;
-                let end_byte = self.tokens[end - 1].end;
-                captures.push(SlotCapture {
-                    slot: slot.clone(),
-                    text: self.line[start_byte..end_byte].to_string(),
-                    start: start_byte,
-                    end: end_byte,
-                });
-            }
+            let start_byte = self.tokens[pos].start;
+            let end_byte = self.tokens[end - 1].end;
+            captures.push(SlotCapture {
+                slot: slot.cloned().unwrap_or_default(),
+                text: self.line[start_byte..end_byte].to_string(),
+                start: start_byte,
+                end: end_byte,
+                regex: slot.is_none(),
+            });
 
             if let Some(finish) = self.match_nodes(rest, cont, end, captures) {
                 return Some(finish);
@@ -582,5 +718,129 @@ mod glued_group_regressions {
         assert!(matches("[the] event", "the event"));
         assert!(matches("[the] event", "event"));
         assert!(!matches("[the] event", "theevent"));
+    }
+}
+
+#[cfg(test)]
+mod punctuation_regressions {
+    use super::*;
+    use crate::pattern::Pattern;
+
+    fn matches(pattern: &str, line: &str) -> bool {
+        match_pattern(&Pattern::parse(pattern).unwrap(), line).is_some()
+    }
+
+    fn texts(line: &str) -> Vec<String> {
+        tokenize(line).into_iter().map(|token| token.text).collect()
+    }
+
+    /// 332 core patterns and 1,934 addon ones put `'s` flush against a slot.
+    /// They matched only when the owner was a `{variable}`, whose brace
+    /// already ends a token; `victim's` was one word a slot could not split.
+    #[test]
+    fn a_possessive_after_a_slot_matches_any_owner() {
+        for line in [
+            "victim's main hand is raised",
+            "the player's main hand is raised",
+            "{_e}'s main hand is raised",
+            "players' main hands are raised",
+        ] {
+            assert!(
+                matches("%living entities%'[s] [main] hand[s] (is|are) raised", line),
+                "{line:?}"
+            );
+        }
+        assert!(matches(
+            "(cancel|interrupt) [the] us[ag]e of %living entities%'[s] [active|current] item",
+            "interrupt the usage of the player's active item"
+        ));
+        assert!(matches("%strings%'s file contents", "{_f}'s file contents"));
+        assert!(matches(
+            "%strings%'s file contents",
+            "arg-1's file contents"
+        ));
+    }
+
+    #[test]
+    fn a_possessive_capture_stops_before_the_apostrophe() {
+        let line = "the player's main hand is raised";
+        let found = match_pattern(
+            &Pattern::parse("%living entities%'[s] [main] hand[s] (is|are) raised").unwrap(),
+            line,
+        )
+        .unwrap();
+        assert_eq!(found.captures[0].text, "the player");
+    }
+
+    /// `by x %number%, y %number%`: the line writes `45,` as one word.
+    #[test]
+    fn a_comma_after_a_slot_is_its_own_token() {
+        assert!(matches(
+            "rotate %quaternions/displays% by x %number%, y %number%(, [and]| and) z %number%",
+            "rotate {_quaternion} by x 45, y 90, z 135"
+        ));
+        assert!(matches(
+            "rotate %quaternions/displays% by x %number%, y %number%(, [and]| and) z %number%",
+            "rotate {_q} by x 45, y 90 and z 135"
+        ));
+        assert!(matches(
+            "[a] [new] vector [(from|at|to)] %number%,[ ]%number%(,[ ]| and )%number%",
+            "vector 1,2,3"
+        ));
+        assert_eq!(texts("a, b,c"), vec!["a", ",", "b", ",", "c"]);
+    }
+
+    /// A percent sign glued to a number is not an interpolation. Reading it as
+    /// one ran on into the string and swallowed `is`.
+    #[test]
+    fn a_percent_glued_to_a_word_is_a_percent_sign() {
+        assert_eq!(
+            texts(r#"assert 1_23_4% is 1234/100 with "x%% y""#),
+            vec![
+                "assert",
+                "1_23_4",
+                "%",
+                "is",
+                "1234/100",
+                "with",
+                r#""x%% y""#
+            ]
+        );
+        assert!(matches(r"chance of %number%[(\%)]", "chance of 10%"));
+        assert!(matches(r"chance of %number%[(\%)]", "chance of 0.5"));
+        // A `%` that opens a token is still an interpolation.
+        assert_eq!(
+            texts("give %player's tool% x"),
+            vec!["give", "%player's tool%", "x"]
+        );
+    }
+
+    /// Quotes inside an interpolation do not end the string: Skript's own
+    /// tests write `"%formatted "<green><bold>Hello world!"%"`.
+    #[test]
+    fn a_string_keeps_quotes_inside_its_interpolations() {
+        assert_eq!(
+            texts(r#"send "%formatted "<green>Hello to you"%" to player"#),
+            vec![
+                "send",
+                r#""%formatted "<green>hello to you"%""#,
+                "to",
+                "player"
+            ]
+        );
+        assert_eq!(
+            texts(r#"send "%{_list::%player%}% to" to player"#),
+            vec!["send", r#""%{_list::%player%}% to""#, "to", "player"]
+        );
+        // An unclosed `%` is read as text, so the string still ends.
+        assert_eq!(
+            texts(r#"send "50% off" to player"#),
+            vec!["send", r#""50% off""#, "to", "player"]
+        );
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_beyond_ascii() {
+        assert!(matches("élever %objects%", "ÉLEVER x"));
     }
 }

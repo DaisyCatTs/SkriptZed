@@ -118,7 +118,19 @@ pub fn to_lsp_position(text: &str, position: Position, encoding: Encoding) -> ls
 /// Converts an LSP position back to an internal one (byte column).
 pub fn from_lsp_position(text: &str, position: lsp::Position, encoding: Encoding) -> Position {
     let character = match encoding {
-        Encoding::Utf8 => position.character,
+        // A client column inside a multi-byte character (out of sync, or
+        // counting codepoints) is rounded down here, once, rather than left
+        // for every handler to slice on and panic. Past the end it is kept:
+        // callers clamp that themselves, and some read it as "after the line".
+        Encoding::Utf8 => {
+            let line = nth_line(text, position.line);
+            let byte = position.character as usize;
+            if byte < line.len() {
+                floor_char_boundary(line, byte) as u32
+            } else {
+                position.character
+            }
+        }
         Encoding::Utf16 => {
             let line = nth_line(text, position.line);
             let mut utf16 = 0usize;
@@ -217,6 +229,18 @@ mod tests {
         // Byte 7 is the middle of `é`.
         let lsp = to_lsp_position(LINE, Position::new(0, 7), Encoding::Utf16);
         assert!(lsp.character <= 7);
+    }
+
+    /// Under UTF-8 the client's column is a byte offset; one inside `é` made
+    /// hover slice mid-character and panic.
+    #[test]
+    fn a_utf8_column_inside_a_character_rounds_down() {
+        let at = |character| {
+            from_lsp_position(LINE, lsp::Position::new(0, character), Encoding::Utf8).character
+        };
+        assert_eq!(at(8), 7);
+        assert_eq!(at(9), 9);
+        assert_eq!(at(999), 999);
     }
 
     #[test]

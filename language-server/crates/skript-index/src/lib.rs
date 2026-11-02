@@ -7,6 +7,7 @@
 
 pub mod folding;
 pub mod symbols;
+pub mod syntax;
 pub mod text;
 
 use std::collections::HashMap;
@@ -14,7 +15,8 @@ use std::collections::HashMap;
 use tree_sitter::{Parser, Tree};
 
 pub use symbols::{FileSymbols, Reference, Symbol, SymbolKind};
-pub use text::{Position, Range};
+pub use syntax::{SyntaxDefinition, SyntaxKind};
+pub use text::{indent_width, Position, Range};
 
 /// One open or on-disk Skript file, kept parsed.
 pub struct Document {
@@ -113,6 +115,14 @@ impl Workspace {
         self.documents.insert(uri.clone(), Document::new(uri, text));
     }
 
+    /// Adds a document parsed elsewhere, unless one is already held for its
+    /// URI. Lets a caller parse without holding whatever lock guards this.
+    pub fn insert_if_absent(&mut self, document: Document) {
+        self.documents
+            .entry(document.uri.clone())
+            .or_insert(document);
+    }
+
     pub fn update(&mut self, uri: &str, text: impl Into<String>) {
         match self.documents.get_mut(uri) {
             Some(document) => document.update(text),
@@ -144,10 +154,12 @@ impl Workspace {
     ///
     /// Scope rules that matter here:
     ///   * a `local function` is only visible in its own file;
-    ///   * a `{_local}` variable is only visible in its own file (really only
-    ///     in its own trigger, but the index does not model triggers, and
-    ///     over-reporting inside one file is far less harmful than missing a
-    ///     definition);
+    ///   * a `{_local}` variable is only visible in its own file. Its
+    ///     references carry the trigger that owns it (the event, command,
+    ///     function or ClassySK method), and `references_in_scope` confines
+    ///     find-references and rename to that trigger; a declaration lookup
+    ///     stays file-wide, because over-reporting inside one file is far
+    ///     less harmful than missing a definition;
     ///   * an `{@option}` is only visible in its own file — options are
     ///     declared in a script's own `options:` block and substituted before
     ///     parsing, so two scripts may use the same name for different values;
@@ -230,11 +242,11 @@ impl Workspace {
         out
     }
 
-    /// Declarations that are actually in scope at `from_uri`.
+    /// Declarations in scope at `from_uri`.
     ///
-    /// [`Workspace::workspace_symbols`] answers a different question — it backs
-    /// the project-wide symbol picker, where showing every file's symbols is the
-    /// whole point. Completion used it anyway, so a file-local `{_total}` and
+    /// [`Workspace::workspace_symbols`] answers a different question: it backs
+    /// the project-wide symbol picker, where showing every file's symbols is its
+    /// purpose. Completion used it anyway, so a file-local `{_total}` and
     /// another script's options were offered inside every unrelated trigger.
     /// Suggesting a name that Skript will not resolve is worse than suggesting
     /// nothing, so this applies the same `is_file_local` rule as
@@ -253,19 +265,109 @@ impl Workspace {
         out
     }
 
-    /// Declarations across the whole workspace matching `query`.
-    pub fn workspace_symbols(&self, query: &str) -> Vec<(&Document, &Symbol)> {
-        let needle = query.to_ascii_lowercase();
-        let mut out = Vec::new();
+    /// Declarations across the whole workspace matching `query`, best first,
+    /// at most [`WORKSPACE_SYMBOL_LIMIT`] of them.
+    ///
+    /// `query` matches case-insensitively as a subsequence, so `gk` finds
+    /// `giveKit`; an exact name ranks above a prefix, a prefix above a
+    /// substring, and a substring above a scattered match. Trigger-local
+    /// variables and sections are left out: they are not things anyone
+    /// navigates to by name, and on a 2,349-script project they made an empty
+    /// query return over 13,000 results.
+    pub fn workspace_symbols(&self, query: &str) -> Vec<SymbolMatch<'_>> {
+        let query = query.to_lowercase();
+        let mut found: Vec<(u32, SymbolMatch<'_>)> = Vec::new();
         for document in self.documents.values() {
-            for symbol in document.symbols().flat() {
-                if needle.is_empty() || symbol.name.to_ascii_lowercase().contains(&needle) {
-                    out.push((document, symbol));
+            let file = file_name(document.uri());
+            let mut symbols = Vec::new();
+            for top in &document.symbols().symbols {
+                with_class(top, None, &mut symbols);
+            }
+            for (symbol, class) in symbols {
+                if matches!(symbol.kind, SymbolKind::LocalVariable | SymbolKind::Section) {
+                    continue;
                 }
+                let Some(score) = name_match(&symbol.name, &query) else {
+                    continue;
+                };
+                let container = class.unwrap_or(file).to_string();
+                found.push((
+                    score,
+                    SymbolMatch {
+                        document,
+                        symbol,
+                        container,
+                    },
+                ));
             }
         }
-        out
+        found.sort_by(|(a_score, a), (b_score, b)| {
+            b_score
+                .cmp(a_score)
+                .then_with(|| a.symbol.name.len().cmp(&b.symbol.name.len()))
+                .then_with(|| a.symbol.name.cmp(&b.symbol.name))
+                .then_with(|| a.document.uri().cmp(b.document.uri()))
+        });
+        found.truncate(WORKSPACE_SYMBOL_LIMIT);
+        found.into_iter().map(|(_, found)| found).collect()
     }
+}
+
+/// Most results [`Workspace::workspace_symbols`] returns.
+pub const WORKSPACE_SYMBOL_LIMIT: usize = 200;
+
+/// One workspace symbol search result.
+pub struct SymbolMatch<'a> {
+    pub document: &'a Document,
+    pub symbol: &'a Symbol,
+    /// The enclosing class for a ClassySK member, otherwise the file name.
+    pub container: String,
+}
+
+/// `symbol` and its descendants, each with the name of the class it is a
+/// member of, if any.
+fn with_class<'s>(
+    symbol: &'s Symbol,
+    class: Option<&'s str>,
+    out: &mut Vec<(&'s Symbol, Option<&'s str>)>,
+) {
+    out.push((symbol, class));
+    let inner = (symbol.kind == SymbolKind::Class)
+        .then_some(symbol.name.as_str())
+        .or(class);
+    for child in &symbol.children {
+        with_class(child, inner, out);
+    }
+}
+
+/// The last path segment of a URI.
+fn file_name(uri: &str) -> &str {
+    uri.rsplit('/').next().unwrap_or(uri)
+}
+
+/// How well `name` matches a lower-cased `query`, higher being better, or
+/// `None` when the query's characters do not all appear in order.
+fn name_match(name: &str, query: &str) -> Option<u32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let lower = name.to_lowercase();
+    if lower == query {
+        return Some(4);
+    }
+    if lower.starts_with(query) {
+        return Some(3);
+    }
+    if lower.contains(query) {
+        return Some(2);
+    }
+    let mut wanted = query.chars().peekable();
+    for ch in lower.chars() {
+        if wanted.peek() == Some(&ch) {
+            wanted.next();
+        }
+    }
+    wanted.peek().is_none().then_some(1)
 }
 
 /// Symbols that only exist inside the file that declares them.
@@ -299,6 +401,17 @@ mod tests {
         assert_eq!(workspace.len(), 1);
         workspace.close("file:///a.sk");
         assert!(workspace.is_empty());
+    }
+
+    /// The project index must never replace a buffer the editor opened first.
+    #[test]
+    fn insert_if_absent_keeps_the_open_document() {
+        let mut workspace = Workspace::new();
+        workspace.open("file:///a.sk", "unsaved");
+        workspace.insert_if_absent(Document::new("file:///a.sk", "on disk"));
+        workspace.insert_if_absent(Document::new("file:///b.sk", "new"));
+        assert_eq!(workspace.get("file:///a.sk").unwrap().text(), "unsaved");
+        assert_eq!(workspace.get("file:///b.sk").unwrap().text(), "new");
     }
 
     #[test]
@@ -359,6 +472,62 @@ mod tests {
         workspace.open("file:///a.sk", "function give_apple():\n\treturn 1\n");
         assert_eq!(workspace.workspace_symbols("apple").len(), 1);
         assert!(workspace.workspace_symbols("banana").is_empty());
+    }
+
+    fn names(found: &[SymbolMatch<'_>]) -> Vec<String> {
+        found
+            .iter()
+            .map(|found| found.symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn workspace_symbols_match_a_subsequence_ranked_by_quality() {
+        let mut workspace = Workspace::new();
+        workspace.open(
+            "file:///a.sk",
+            "function giveKit(p: player):\n\tstop\nfunction gk():\n\tstop\nfunction gkHelper():\n\tstop\nfunction bigKey():\n\tstop\n",
+        );
+        // Exact, then prefix, then substring-free scattered matches.
+        assert_eq!(
+            names(&workspace.workspace_symbols("GK")),
+            vec!["gk", "gkHelper", "bigKey", "giveKit"]
+        );
+    }
+
+    #[test]
+    fn workspace_symbols_skip_locals_and_name_their_container() {
+        let mut workspace = Workspace::new();
+        workspace.open(
+            "file:///dir/wallet.sk",
+            "class Wallet:\n\tpublic reset():\n\t\tset {_x} to 1\non join:\n\tif {_x} is set:\n\t\tstop\nfunction f(who: player):\n\tstop\n",
+        );
+        let found = workspace.workspace_symbols("");
+        assert!(found.iter().all(|found| !matches!(
+            found.symbol.kind,
+            SymbolKind::LocalVariable | SymbolKind::Section
+        )));
+        let container = |name: &str| {
+            found
+                .iter()
+                .find(|found| found.symbol.name == name)
+                .map(|found| found.container.clone())
+        };
+        assert_eq!(container("reset").as_deref(), Some("Wallet"));
+        assert_eq!(container("f").as_deref(), Some("wallet.sk"));
+    }
+
+    #[test]
+    fn workspace_symbols_are_capped() {
+        let mut workspace = Workspace::new();
+        let source: String = (0..300)
+            .map(|index| format!("function f{index}():\n\tstop\n"))
+            .collect();
+        workspace.open("file:///a.sk", source);
+        assert_eq!(
+            workspace.workspace_symbols("").len(),
+            WORKSPACE_SYMBOL_LIMIT
+        );
     }
 
     #[test]

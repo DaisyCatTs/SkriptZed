@@ -132,14 +132,14 @@ impl Category {
         match self {
             Category::Condition => "skriptCondition",
             Category::Effect => "skriptEffect",
-            Category::Expression => "skriptExpression",
+            // Property expressions are expressions; an experiment is named in
+            // a `using` structure.
+            Category::Expression | Category::Property => "skriptExpression",
             Category::Event => "skriptEvent",
             Category::Section => "skriptSection",
-            Category::Structure => "skriptStructure",
+            Category::Structure | Category::Experiment => "skriptStructure",
             Category::Type => "skriptType",
             Category::Function => "function",
-            Category::Experiment => "skriptStructure",
-            Category::Property => "skriptExpression",
         }
     }
 
@@ -187,7 +187,10 @@ pub struct Entry {
 
     #[serde(default, deserialize_with = "string_list")]
     pub description: Vec<String>,
-    #[serde(default, deserialize_with = "string_list")]
+    /// `experiments` entries spell this `pattern`, singular. Reading only
+    /// `patterns` left all eight with none, so hovering `using for loops`
+    /// showed the generic `using` structure instead of the experiment.
+    #[serde(default, alias = "pattern", deserialize_with = "string_list")]
     pub patterns: Vec<String>,
     #[serde(default, deserialize_with = "string_list")]
     pub examples: Vec<String>,
@@ -229,6 +232,11 @@ pub struct Entry {
     #[serde(skip)]
     pub addon: Option<AddonRef>,
 
+    /// SkriptHub's own record id, for entries loaded from SkriptHub. `id`
+    /// holds the record's `json_id` when it has one, so this is kept apart.
+    #[serde(skip)]
+    pub skripthub_id: Option<u64>,
+
     /// The Skript version this element first appeared in, parsed from `since`.
     ///
     /// Cached here because `since` is free text and parsing it per completion
@@ -236,6 +244,31 @@ pub struct Entry {
     /// (`"unknown (before 2.1)"`), which is treated as always available.
     #[serde(skip)]
     pub min_version: Option<crate::version::Version>,
+
+    /// The `key: value` entries a section or structure takes, such as
+    /// `result:` and `shape:` in SkBee's `register shaped recipe:`.
+    ///
+    /// Only SkriptHub publishes these (87 records, most of them SkBee's);
+    /// Skript's own `docs.json` has no such field, so core entries stay empty.
+    #[serde(skip)]
+    pub section_entries: Vec<SectionEntry>,
+}
+
+/// One entry a section accepts, as SkriptHub records it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SectionEntry {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, rename = "isRequired")]
+    pub required: bool,
+    /// Whether the entry opens a section of its own (`ingredients:`) rather
+    /// than taking a value on its line.
+    #[serde(default, rename = "isSection")]
+    pub section: bool,
+    /// SkriptHub writes the string `"null"` for "no default"; that is
+    /// normalised to `None` on the way in.
+    #[serde(default, rename = "defaultValue", deserialize_with = "nullable")]
+    pub default_value: Option<String>,
 }
 
 impl Entry {
@@ -257,6 +290,14 @@ impl Entry {
     /// they all predate 2.2.
     pub fn needs_newer_than(&self, target: crate::version::Version) -> bool {
         self.min_version.is_some_and(|min| min > target)
+    }
+
+    /// The section entry named `key`, ignoring case and a trailing colon.
+    pub fn section_entry(&self, key: &str) -> Option<&SectionEntry> {
+        let wanted = key.trim().trim_end_matches(':').trim();
+        self.section_entries
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(wanted))
     }
 }
 
@@ -402,25 +443,52 @@ impl Docs {
     /// and SkriptHub second, and SkriptHub's own 1,237 copies of core Skript
     /// syntax lose to the authoritative ones. They really do collide — both
     /// sides use ids like `ExprVersion`.
-    pub fn merge(&mut self, other: Docs) {
+    pub fn merge(&mut self, mut other: Docs) {
         for category in Category::ALL.iter().copied() {
-            let seen: std::collections::HashSet<String> = self
+            let seen: std::collections::HashSet<(String, String)> = self
                 .entries(category)
                 .iter()
                 .filter(|entry| !entry.id.is_empty())
-                .map(|entry| entry.id.to_ascii_lowercase())
+                .map(merge_key)
                 .collect();
 
-            let incoming: Vec<Entry> = other
-                .entries(category)
-                .iter()
-                .filter(|entry| {
-                    entry.id.is_empty() || !seen.contains(&entry.id.to_ascii_lowercase())
-                })
-                .cloned()
+            let incoming: Vec<Entry> = std::mem::take(other.entries_mut(category))
+                .into_iter()
+                .filter(|entry| entry.id.is_empty() || !seen.contains(&merge_key(entry)))
                 .collect();
 
             self.entries_mut(category).extend(incoming);
+        }
+    }
+}
+
+/// What makes two entries the same syntax when databases are merged: the id,
+/// and whose syntax it is.
+///
+/// Ids are usually a Java class's simple name, and addons reuse them — 181
+/// SkriptHub records share one with a core Skript entry (Lusk's, SkQuery's,
+/// SkBee's `EffMessage`-style names). Matching on the id alone dropped every
+/// one of those addon syntaxes as a "duplicate". Core Skript, and SkriptHub's
+/// own copies of it under the addon name `Skript`, share the empty owner, so
+/// those copies still lose to the official entries.
+fn merge_key(entry: &Entry) -> (String, String) {
+    let owner = entry
+        .addon
+        .as_ref()
+        .map(|addon| addon.name.to_ascii_lowercase())
+        .filter(|name| name != "skript")
+        .unwrap_or_default();
+    (owner, entry.id.to_ascii_lowercase())
+}
+
+impl Docs {
+    /// Marks every entry as coming from `addon`, for a database in Skript's own
+    /// schema — which, unlike SkriptHub's, does not say whose syntax it is.
+    pub fn attribute_to(&mut self, addon: &AddonRef) {
+        for category in Category::ALL.iter().copied() {
+            for entry in self.entries_mut(category) {
+                entry.addon = Some(addon.clone());
+            }
         }
     }
 

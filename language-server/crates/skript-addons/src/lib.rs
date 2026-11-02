@@ -16,6 +16,7 @@
 //! parsing them is guesswork, and the manifest is authoritative.
 
 pub mod manifest;
+pub mod platform;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -126,6 +127,8 @@ fn find_plugins_dir(start: &Path) -> Option<PathBuf> {
     None
 }
 
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+
 /// Reads a plugin's manifest out of its JAR.
 ///
 /// A JAR is a ZIP; `paper-plugin.yml` is tried first because SkBee — and a
@@ -137,9 +140,14 @@ fn read_jar(path: &Path) -> Option<DetectedAddon> {
     let manifest = ["paper-plugin.yml", "plugin.yml"]
         .into_iter()
         .find_map(|name| {
-            let mut entry = archive.by_name(name).ok()?;
+            let entry = archive.by_name(name).ok()?;
             let mut text = String::new();
-            entry.read_to_string(&mut text).ok()?;
+            // Capped: a manifest is a few KB, and a compressed entry claiming
+            // gigabytes would otherwise be inflated into memory in full.
+            entry
+                .take(MAX_MANIFEST_BYTES)
+                .read_to_string(&mut text)
+                .ok()?;
             manifest::parse(&text)
         })?;
 

@@ -1,17 +1,39 @@
 //! Diagnostics.
 //!
-//! The brief asked for warnings that are *informative rather than noisy*, and
-//! for Skript that constraint does real work: any addon can register syntax we
-//! have never heard of, so "this line matched no known pattern" is a hint that
-//! must default to **off**. Turning it on by default would light up every
-//! script on every server that runs SkBee or DiSky.
+//! Only what is certainly wrong is reported by default:
 //!
-//! What is reported instead is only what is certainly wrong: indentation Skript
-//! itself would reject, calls to functions that do not exist anywhere in the
-//! workspace, duplicate declarations, and syntax upstream has marked deprecated.
+//! * indentation Skript itself would reject (mixed tabs and spaces, a unit
+//!   that changes inside one structure, a depth that is not a multiple of it);
+//! * an unclosed `###` block comment;
+//! * a function, command or option declared twice in one script;
+//! * a call to a function declared nowhere in the project or the catalog;
+//! * a call with more arguments than its function takes, or fewer than it
+//!   needs ([`arity`]);
+//! * an `{@option}` the script's `options:` block never declares;
+//! * syntax upstream has marked deprecated;
+//! * syntax that belongs to an addon the server does not have installed
+//!   (`requires-addon`), when its `plugins/` folder is known.
+//!
+//! Warnings and hints cover what is wrong as far as a careful reading can
+//! tell, and say nothing when it cannot:
+//!
+//! * `cancel event` in an event that cannot be cancelled ([`cancel`]);
+//! * a local variable read but never set, or set but never read, in one
+//!   trigger ([`locals`]).
+//!
+//! "This line matches no known pattern" is opt-in. Any addon can register
+//! syntax the catalog has never heard of, so turning it on by default would
+//! light up every script on every server that runs SkBee or DiSky.
 
 use skript_docs::Catalog;
 use skript_index::{Document, Position, Range, SymbolKind, Workspace};
+
+use crate::lines;
+
+mod arity;
+mod cancel;
+mod layout;
+mod locals;
 
 /// Severity, mirroring LSP's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +58,14 @@ pub struct Diagnostic {
     pub related: Vec<Related>,
 }
 
+impl Diagnostic {
+    /// Whether a client should render the range as dead code: faded, and
+    /// left out of the problems count by editors that honour the tag.
+    pub fn is_unnecessary(&self) -> bool {
+        self.code == locals::NEVER_READ
+    }
+}
+
 /// A second location a diagnostic refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Related {
@@ -50,6 +80,8 @@ pub struct Options {
     pub unknown_syntax: bool,
     /// Report syntax upstream has marked deprecated.
     pub deprecated_syntax: bool,
+    /// Report locals that are read but never set, or set but never read.
+    pub local_variables: bool,
     /// Whether the project index has finished reading the folder.
     ///
     /// Not a user setting. "This function does not exist" is only true once
@@ -65,6 +97,7 @@ impl Default for Options {
         Self {
             unknown_syntax: false,
             deprecated_syntax: true,
+            local_variables: true,
             project_indexed: false,
         }
     }
@@ -86,12 +119,19 @@ pub fn check(
     check_indentation(document, &mut out);
     check_block_comments(document, &mut out);
     check_duplicate_declarations(document, &mut out);
+    check_unknown_options(document, &mut out);
+    if options.local_variables {
+        locals::check(document, catalog, &mut out);
+    }
     if options.project_indexed {
         check_unknown_functions(document, workspace, catalog, &mut out);
+        // Another file may declare an overload with a different arity.
+        arity::check(document, workspace, catalog, &mut out);
     }
 
     if let Some(catalog) = catalog {
         check_catalog(document, catalog, uninstalled, options, &mut out);
+        cancel::check(document, catalog, &mut out);
     }
 
     out.sort_by_key(|diagnostic| {
@@ -111,7 +151,7 @@ pub fn check(
 /// here, where it produces a message instead of a broken tree.
 fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
     let mut unit: Option<&str> = None;
-    let prose = block_comment_lines(document.text());
+    let prose = lines::block_comment_lines(document.text());
 
     for (number, line) in document.text().lines().enumerate() {
         // A `###` block's interior is prose, and its leading whitespace means
@@ -140,7 +180,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
             continue;
         }
 
-        let indent_len = line.len() - line.trim_start().len();
+        let indent_len = skript_index::indent_width(line);
         if indent_len == 0 {
             // A new top-level structure begins, and Skript infers the indent
             // unit **per structure**, not per file — reported as issue #2 by
@@ -183,7 +223,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                         message: format!(
                             "Indentation uses {} here but {} earlier in this structure. Skript \
                              infers one indent unit per structure, so mixing between structures \
-                             is fine — mixing inside one is not.",
+                             is fine, but mixing inside one is not.",
                             if indent.starts_with(' ') {
                                 "spaces"
                             } else {
@@ -198,7 +238,7 @@ fn check_indentation(document: &Document, out: &mut Vec<Diagnostic>) {
                         code: "inconsistent-indentation",
                         related: Vec::new(),
                     });
-                } else if indent_len % unit.len() != 0 {
+                } else if !indent_len.is_multiple_of(unit.len()) {
                     out.push(Diagnostic {
                         range,
                         severity: Severity::Error,
@@ -287,6 +327,46 @@ fn preceded_by_new(document: &Document, reference: &skript_index::Reference) -> 
     before.trim_end().ends_with("new")
 }
 
+/// `{@name}` with no `name:` in this script's `options:` block.
+///
+/// Certain, unlike most "unknown" checks: options belong to the script that
+/// declares them — no addon, no other file and no runtime state can supply
+/// one — so a missing declaration is always a real error.
+///
+/// Nested options (Skript 2.7+) are written `{@parent.child}`, and the index
+/// records only `parent`; a dotted name counts as declared when its first part
+/// is. Names compare case-insensitively, which can only make this quieter.
+fn check_unknown_options(document: &Document, out: &mut Vec<Diagnostic>) {
+    let declared: std::collections::HashSet<String> = document
+        .symbols()
+        .flat()
+        .into_iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Option)
+        .map(|symbol| symbol.name.trim().to_ascii_lowercase())
+        .collect();
+
+    for reference in &document.symbols().references {
+        if reference.kind != SymbolKind::Option {
+            continue;
+        }
+        let name = reference.name.trim().to_ascii_lowercase();
+        let root = name.split('.').next().unwrap_or(&name);
+        if declared.contains(&name) || declared.contains(root) {
+            continue;
+        }
+        out.push(Diagnostic {
+            range: reference.range,
+            severity: Severity::Error,
+            message: format!(
+                "No option named `{}` in this script's `options:` block.",
+                reference.name.trim()
+            ),
+            code: "unknown-option",
+            related: Vec::new(),
+        });
+    }
+}
+
 fn check_unknown_functions(
     document: &Document,
     workspace: &Workspace,
@@ -355,7 +435,6 @@ fn check_unknown_functions(
     }
 }
 
-/// Catalog-backed checks: deprecation, and optionally unrecognised syntax.
 /// Lines that declare a structure entry rather than run a statement.
 ///
 /// Taken from the index rather than re-derived from the text: the parse tree
@@ -375,28 +454,22 @@ fn structure_entry_lines(document: &Document) -> std::collections::HashSet<u32> 
                     | SymbolKind::Alias
                     | SymbolKind::GlobalVariable
                     | SymbolKind::LocalVariable
+                    // ClassySK declarations: a class header, field or method
+                    // header is shaped by the grammar, not by any pattern.
+                    | SymbolKind::Class
+                    | SymbolKind::Field
+                    | SymbolKind::Method
             )
         })
         .map(|symbol| symbol.range.start.line)
         .collect()
 }
 
-/// Line numbers inside `###` block comments, delimiters excluded.
-fn block_comment_lines(text: &str) -> std::collections::HashSet<usize> {
-    let mut inside = false;
-    let mut lines = std::collections::HashSet::new();
-    for (number, line) in text.lines().enumerate() {
-        if line.trim() == "###" {
-            inside = !inside;
-            continue;
-        }
-        if inside {
-            lines.insert(number);
-        }
-    }
-    lines
-}
-
+/// Catalog-backed checks: deprecation, and optionally unrecognised syntax.
+///
+/// Each line is judged without its comment. Matching the raw line made
+/// `send "hi" # greet` unknown syntax, and hid a deprecated statement behind
+/// any trailing comment.
 fn check_catalog(
     document: &Document,
     catalog: &Catalog,
@@ -404,14 +477,13 @@ fn check_catalog(
     options: Options,
     out: &mut Vec<Diagnostic>,
 ) {
-    let prose = block_comment_lines(document.text());
     let entries = structure_entry_lines(document);
 
-    for (number, raw) in document.text().lines().enumerate() {
-        let trimmed = raw.trim();
-        // Prose inside a `###` block is not syntax and must never be reported
-        // as unrecognised.
-        if trimmed.is_empty() || trimmed.starts_with('#') || prose.contains(&number) {
+    // Prose inside a `###` block is not syntax and must never be reported as
+    // unrecognised.
+    for (number, raw) in lines::code_lines(document.text()) {
+        let trimmed = lines::code_part(raw).trim();
+        if trimmed.is_empty() {
             continue;
         }
         // A structure's entries are indented, but they are not statements:
@@ -420,20 +492,19 @@ fn check_catalog(
         // condition, so once the role filter stopped the catch-all expressions
         // absorbing them, every one became an "unknown syntax" hint. The parse
         // tree already knows which lines these are.
-        if entries.contains(&(number as u32)) {
+        if entries.contains(&number)
+            || crate::completion::is_documented_entry(catalog, document, number)
+        {
             continue;
         }
         let code = trimmed.trim_end_matches(':');
-        let indent = (raw.len() - raw.trim_start().len()) as u32;
+        let indent = skript_index::indent_width(raw) as u32;
         // Indentation says whether this line opens a structure or sits inside
         // one, which rules out the categories that could never explain it.
         // Without that filter the three catch-all expressions match every line
         // ever written and nothing is reportable as unknown.
         let role = skript_docs::LineRole::from_indent(indent as usize);
-        let range = Range::new(
-            Position::new(number as u32, indent),
-            Position::new(number as u32, raw.trim_end().len() as u32),
-        );
+        let range = Range::on_line(number, indent, indent + trimmed.len() as u32);
 
         match catalog.classify_line(code, role) {
             Some((id, _)) => {
@@ -462,7 +533,7 @@ fn check_catalog(
                 // A line we cannot place might belong to an addon the server
                 // does not have. That is a far more useful thing to say than
                 // "unknown syntax", and it is only sayable because detection
-                // told us what is actually installed.
+                // told us what is installed.
                 let from_addon = uninstalled
                     .and_then(|rest| rest.classify_line(code, role))
                     .and_then(|(id, _)| rest_entry_addon(uninstalled?, id));
@@ -513,10 +584,6 @@ mod tests {
         let mut workspace = Workspace::new();
         workspace.open("file:///t.sk", source);
         let document = workspace.get("file:///t.sk").unwrap();
-        // Borrowing the document out of the workspace it lives in is fine here
-        // because nothing mutates during the check.
-        let snapshot = Workspace::new();
-        let _ = &snapshot;
         check(
             document,
             &workspace,
@@ -538,7 +605,7 @@ mod tests {
 
     #[test]
     fn accepts_ordinary_tab_indented_script() {
-        assert!(codes("on join:\n\tsend \"hi\"\n\tif {_x} is set:\n\t\tstop\n").is_empty());
+        assert!(codes("on join:\n\tsend \"hi\"\n\tif player is op:\n\t\tstop\n").is_empty());
     }
 
     #[test]
@@ -578,12 +645,7 @@ mod tests {
     /// is not the script's.
     #[test]
     fn a_comment_indented_differently_is_not_an_error() {
-        let found = codes(
-            "on join:
-    # aligned with spaces
-	send \"hi\"
-",
-        );
+        let found = codes("on join:\n    # aligned with spaces\n\tsend \"hi\"\n");
         assert!(
             !found.contains(&"inconsistent-indentation"),
             "a comment must not set the file's indent unit, got {found:?}"
@@ -593,13 +655,7 @@ mod tests {
     #[test]
     fn real_mixing_is_still_reported_around_a_comment() {
         // The comment is skipped, but the two *code* lines still disagree.
-        let found = codes(
-            "on join:
-    send \"a\"
-	# note
-	send \"b\"
-",
-        );
+        let found = codes("on join:\n    send \"a\"\n\t# note\n\tsend \"b\"\n");
         assert!(found.contains(&"inconsistent-indentation"));
     }
 
@@ -609,14 +665,7 @@ mod tests {
     /// every one of them an error.
     #[test]
     fn each_structure_gets_its_own_indent_unit() {
-        let found = codes(
-            "on join:
-	send \"a\"
-
-on quit:
-    send \"b\"
-",
-        );
+        let found = codes("on join:\n\tsend \"a\"\n\non quit:\n    send \"b\"\n");
         assert!(
             !found.contains(&"inconsistent-indentation"),
             "structures may differ from each other, got {found:?}"
@@ -625,12 +674,7 @@ on quit:
 
     #[test]
     fn mixing_inside_one_structure_is_still_an_error() {
-        let found = codes(
-            "on join:
-	send \"a\"
-    send \"b\"
-",
-        );
+        let found = codes("on join:\n\tsend \"a\"\n    send \"b\"\n");
         assert!(
             found.contains(&"inconsistent-indentation"),
             "one structure must pick a side, got {found:?}"
@@ -671,14 +715,53 @@ on quit:
     /// showed an unfixable error on every Java constructor.
     #[test]
     fn a_java_constructor_is_not_a_missing_skript_function() {
-        let found = codes(
-            "on join:
-	set {_list} to new ArrayList()
-",
-        );
+        let found = codes("on join:\n\tset {_list} to new ArrayList()\n");
         assert!(
             !found.contains(&"unknown-function"),
             "`new X()` is skript-reflect, not a Skript call, got {found:?}"
+        );
+    }
+
+    #[test]
+    fn reports_an_option_the_script_never_declares() {
+        let found = codes("options:\n\tprefix: &6[S]\n\non join:\n\tsend \"{@prefix}\" to player\n\tset {_x} to {@missing}\n");
+        assert_eq!(
+            found
+                .iter()
+                .filter(|code| **code == "unknown-option")
+                .count(),
+            1,
+            "{found:?}"
+        );
+    }
+
+    /// `{@parent.child}` is how a nested option (Skript 2.7+) is used.
+    #[test]
+    fn accepts_declared_and_nested_options() {
+        let found = codes(
+            "options:\n\tmax: 5\n\tcolors:\n\t\tmain: &a\n\non join:\n\tset {_x} to {@max}\n\tset {_c} to {@colors.main}\n",
+        );
+        assert!(!found.contains(&"unknown-option"), "{found:?}");
+    }
+
+    /// Reported from real use: every method in a ClassySK script — its
+    /// declaration, `self::start()`, `{_bar}::play(…)` — was flagged as an
+    /// undeclared Skript function.
+    #[test]
+    fn a_classysk_method_is_not_a_missing_skript_function() {
+        let found = codes(concat!(
+            "class Bar:\n",
+            "\tpublic play(text: string):\n",
+            "\t\tself::start()\n",
+            "\tpublic start():\n",
+            "\t\tstop\n",
+            "on join:\n",
+            "\t{_bar}::play(\"hi\")\n",
+            "\tBar::start()\n",
+        ));
+        assert!(
+            !found.contains(&"unknown-function"),
+            "a method is not a Skript function, got {found:?}"
         );
     }
 
@@ -723,6 +806,58 @@ on quit:
             },
         );
         assert!(loud.iter().any(|d| d.code == "unknown-syntax"));
+    }
+
+    const DEPRECATED_SEND: &str = r#"{
+      "effects": [
+        { "id": "t.send", "name": "Send", "patterns": ["send %string%"], "deprecated": "use tell" }
+      ]
+    }"#;
+
+    fn catalog_codes(source: &str, options: Options) -> Vec<(&'static str, Range)> {
+        let catalog = Catalog::build(skript_docs::Docs::parse(DEPRECATED_SEND).unwrap());
+        let mut workspace = Workspace::new();
+        workspace.open("file:///t.sk", source);
+        let document = workspace.get("file:///t.sk").unwrap();
+        check(document, &workspace, Some(&catalog), None, options)
+            .into_iter()
+            .map(|d| (d.code, d.range))
+            .collect()
+    }
+
+    /// The catalog check never stripped comments, so a trailing one made a
+    /// known line unknown, and hid it from the deprecation check.
+    #[test]
+    fn a_trailing_comment_does_not_hide_the_statement() {
+        let options = Options {
+            unknown_syntax: true,
+            ..Options::default()
+        };
+        let found = catalog_codes("on join:\n\tsend \"hi\" # greet\n", options);
+        // This tiny catalog has no `on join` event, so only line 1 matters.
+        let codes: Vec<&str> = found
+            .iter()
+            .filter(|(_, range)| range.start.line == 1)
+            .map(|(code, _)| *code)
+            .collect();
+        assert_eq!(codes, vec!["deprecated-syntax"], "{found:?}");
+
+        // The range covers the statement, not the comment after it.
+        let (_, range) = found
+            .iter()
+            .find(|(code, _)| *code == "deprecated-syntax")
+            .unwrap();
+        assert_eq!((range.start.character, range.end.character), (1, 10));
+    }
+
+    #[test]
+    fn a_hash_inside_a_string_is_not_a_comment_to_the_catalog_check() {
+        let found = catalog_codes("on join:\n\tsend \"#1\"\n", Options::default());
+        let (_, range) = found
+            .iter()
+            .find(|(code, _)| *code == "deprecated-syntax")
+            .expect("the whole statement still matches");
+        assert_eq!(range.end.character, 10);
     }
 
     #[test]
@@ -778,22 +913,7 @@ mod entry_line_regressions {
     /// condition, which made the setting unusable on any real script.
     #[test]
     fn structure_entries_are_not_unknown_syntax() {
-        let source = "options:
-	prefix: &6[Server]&r
-
-aliases:
-	stones = stone, granite
-
-variables:
-	{score::*} = 0
-
-command /home:
-	description: Go home
-	permission: skript.home
-	usage: /home
-	trigger:
-		stop
-";
+        let source = "options:\n\tprefix: &6[Server]&r\n\naliases:\n\tstones = stone, granite\n\nvariables:\n\t{score::*} = 0\n\ncommand /home:\n\tdescription: Go home\n\tpermission: skript.home\n\tusage: /home\n\ttrigger:\n\t\tstop\n";
 
         let catalog = skript_docs::Catalog::build(skript_docs::fallback_docs());
         let mut workspace = Workspace::new();

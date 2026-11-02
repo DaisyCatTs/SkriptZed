@@ -106,9 +106,10 @@ impl<T> PatternIndex<T> {
 
     /// Matches `line` against the index and returns every match, best first.
     ///
-    /// "Best" is the pattern's specificity: a pattern with more mandatory
-    /// literal words and more concretely-typed slots beats a vaguer one, so
-    /// `give %item types% to %players%` wins over a bare `%objects%`.
+    /// "Best" is how much of the line the pattern's own words explain, then
+    /// the pattern's specificity, less a penalty for each literal sitting in a
+    /// slot that cannot hold it. So `give %item types% to %players%` wins over
+    /// a bare `%objects%`.
     pub fn matches(&self, line: &str) -> Vec<(&T, Match)> {
         self.matches_scored(line)
             .into_iter()
@@ -127,14 +128,16 @@ impl<T> PatternIndex<T> {
         for index in self.candidates(line) {
             let entry = &self.entries[index];
             if let Some(matched) = matcher::match_pattern(&entry.pattern, line) {
-                // A `<regex>` consumes an unknown span, so coverage cannot be
-                // measured and the pattern falls back to its static score.
-                let coverage = if entry.pattern.has_regex() {
-                    0
-                } else {
-                    literal_coverage(line, &matched)
-                };
-                let score = coverage * 10 + entry.pattern.specificity();
+                // A `<regex>`'s span is recorded like a slot's, so a pattern
+                // using one is credited for its own words and nothing else.
+                // Scoring such patterns 0 made ClassySK's `[a] new [instance
+                // of] <[A-Z]\w*>` lose to a core pattern that explained only
+                // `new`.
+                let coverage = literal_coverage(line, &matched);
+                let score = coverage
+                    .saturating_mul(10)
+                    .saturating_add(entry.pattern.specificity())
+                    .saturating_sub(IMPLAUSIBLE_LITERAL * implausible_literals(&matched));
                 results.push((score, &entry.value, matched));
             }
         }
@@ -165,21 +168,82 @@ impl<T> PatternIndex<T> {
 /// Measuring the match instead makes those two equal, and an exact tie already
 /// resolves in core Skript's favour. Counts non-whitespace bytes outside the
 /// slot captures, so a pattern that explains more of the line ranks higher.
+///
+/// Regex holes count as unexplained, exactly like slots: the pattern did not
+/// spell that text out.
 fn literal_coverage(line: &str, matched: &matcher::Match) -> i32 {
-    let non_space = |text: &str| {
-        text.bytes()
-            .filter(|byte| !byte.is_ascii_whitespace())
-            .count()
-    };
+    i32::try_from(matched.literal_coverage(line)).unwrap_or(i32::MAX)
+}
 
-    let captured: usize = matched
+/// What one literal filling a slot that cannot take it costs a match.
+///
+/// Worth two mandatory words, or two characters of coverage: it settles a
+/// specificity contest without overturning a real difference in how much of
+/// the line each pattern explains.
+const IMPLAUSIBLE_LITERAL: i32 = 20;
+
+/// How many slots took a literal that the slot cannot hold.
+///
+/// Slots are untyped here on purpose, because an expression's type is not
+/// knowable without evaluating it. A literal's type is: `20` is a number and
+/// `"hi"` is text, whatever surrounds them. On `block contains 20
+/// cobblestone`, Region Contains (`%regions% contain[s] %directions%
+/// %locations%`) outscored Contains (`%objects% contain[s] %objects%`) on the
+/// strength of three typed slots, one of which had taken `20` as a direction.
+/// A literal can never be changed either, so a `%~by-reference%` slot cannot
+/// hold one whatever its type.
+///
+/// This only ranks and never rejects, so a type missing from
+/// [`LiteralKind::accepts`] costs some ranking rather than a match.
+fn implausible_literals(matched: &Match) -> i32 {
+    let count = matched
         .captures
         .iter()
-        .filter_map(|capture| line.get(capture.start..capture.end))
-        .map(non_space)
-        .sum();
+        .filter(|capture| !capture.regex)
+        .filter(|capture| {
+            literal_kind(&capture.text).is_some_and(|kind| {
+                capture.slot.by_reference || !capture.slot.types.iter().any(|ty| kind.accepts(ty))
+            })
+        })
+        .count();
+    i32::try_from(count).unwrap_or(i32::MAX)
+}
 
-    non_space(line).saturating_sub(captured) as i32
+#[derive(Clone, Copy)]
+enum LiteralKind {
+    Number,
+    Text,
+}
+
+impl LiteralKind {
+    fn accepts(self, ty: &str) -> bool {
+        let singular = ty.strip_suffix('s').unwrap_or(ty);
+        let named: &[&str] = match self {
+            LiteralKind::Number => &[
+                "number", "integer", "long", "double", "float", "short", "byte",
+            ],
+            LiteralKind::Text => &["text", "string"],
+        };
+        singular == "object" || named.contains(&singular)
+    }
+}
+
+/// The type of `text` when it is exactly one number or one quoted string.
+fn literal_kind(text: &str) -> Option<LiteralKind> {
+    let tokens = matcher::tokenize(text);
+    let [token] = tokens.as_slice() else {
+        return None;
+    };
+    if token.text.starts_with('"') {
+        return Some(LiteralKind::Text);
+    }
+    let digits = token.text.strip_prefix('-').unwrap_or(&token.text);
+    let is_number = digits.starts_with(|ch: char| ch.is_ascii_digit())
+        && digits
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || ch == '_' || ch == '.')
+        && digits.matches('.').count() <= 1;
+    is_number.then_some(LiteralKind::Number)
 }
 
 #[cfg(test)]
@@ -220,5 +284,75 @@ mod tests {
     fn returns_nothing_for_an_unknown_line() {
         let index = index_of(&["cancel [the] event"]);
         assert!(index.best_match("totally unknown addon syntax").is_none());
+    }
+
+    /// Core Skript's own example: `20` cannot be a direction, so the pattern
+    /// that needs it to be one must not win on slot count alone.
+    #[test]
+    fn a_number_in_a_slot_that_cannot_hold_one_ranks_lower() {
+        let index = index_of(&[
+            "[[the] region] %regions% contain[s] %directions% %locations%",
+            "%objects% contain[s] %objects%",
+        ]);
+        let (which, _) = index.best_match("block contains 20 cobblestone").unwrap();
+        assert_eq!(which, "%objects% contain[s] %objects%");
+
+        // Not a rejection: with nothing better on offer it still matches.
+        let index = index_of(&["[[the] region] %regions% contain[s] %directions% %locations%"]);
+        assert!(index.best_match("block contains 20 cobblestone").is_some());
+    }
+
+    #[test]
+    fn literal_kinds_know_their_slots() {
+        assert!(matches!(literal_kind("20"), Some(LiteralKind::Number)));
+        assert!(matches!(literal_kind("-1.5"), Some(LiteralKind::Number)));
+        assert!(matches!(literal_kind("1_000"), Some(LiteralKind::Number)));
+        assert!(matches!(
+            literal_kind(r#""hi there""#),
+            Some(LiteralKind::Text)
+        ));
+        // Several tokens, or not a literal at all: no claim is made.
+        assert!(literal_kind("20 cobblestone").is_none());
+        assert!(literal_kind(r#""a" and "b""#).is_none());
+        assert!(literal_kind("player").is_none());
+        assert!(literal_kind("1.2.3").is_none());
+
+        assert!(LiteralKind::Number.accepts("integers"));
+        assert!(LiteralKind::Number.accepts("objects"));
+        assert!(!LiteralKind::Number.accepts("directions"));
+        assert!(LiteralKind::Text.accepts("strings"));
+        assert!(!LiteralKind::Text.accepts("players"));
+    }
+
+    #[test]
+    fn a_literal_cannot_fill_a_by_reference_slot() {
+        let index = index_of(&["set %~objects% to %objects%", "set %objects% %objects%"]);
+        let scored = index.matches_scored(r#"set "x" to 5"#);
+        let by_reference = scored
+            .iter()
+            .find(|(_, which, _)| which.as_str() == "set %~objects% to %objects%")
+            .map(|(score, _, _)| *score)
+            .unwrap();
+        let unpenalised = index.matches_scored(r#"set {_x} to 5"#)[0].0;
+        // Same coverage and specificity; the string in `%~objects%` is the
+        // whole difference.
+        assert_eq!(unpenalised - by_reference, IMPLAUSIBLE_LITERAL);
+    }
+
+    /// The implicit conditional, `implicit:<.+>`, matches anything. Callers
+    /// filtering whole lines rely on being able to see that it explained none
+    /// of the text.
+    #[test]
+    fn a_catch_all_match_explains_no_text() {
+        let index = index_of(&["implicit:<.+>", "send %objects%"]);
+        let ranked = index.matches(r#"send "hi""#);
+        let catch_all = ranked
+            .iter()
+            .find(|(which, _)| which.as_str() == "implicit:<.+>")
+            .map(|(_, matched)| matched)
+            .unwrap();
+        assert!(!catch_all.explains_text(r#"send "hi""#));
+        assert!(ranked[0].1.explains_text(r#"send "hi""#));
+        assert_eq!(ranked[0].1.literal_coverage(r#"send "hi""#), 4);
     }
 }

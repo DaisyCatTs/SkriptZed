@@ -5,9 +5,9 @@
 //! `textDocument/foldingRange`, which Zed consumes complete with the
 //! `collapsedText` shown on the folded line.
 //!
-//! That makes this module the only way to deliver the folding the brief asked
-//! for — events, commands, functions, loops, if/else, while, sections, options
-//! and block comments — with a placeholder that says what was folded away.
+//! That makes this module the only way to fold events, commands, functions,
+//! loops, if/else, while, sections, options and block comments with a
+//! placeholder that says what was folded away.
 
 use tree_sitter::{Node, Tree};
 
@@ -48,7 +48,7 @@ pub fn ranges(tree: &Tree, source: &str) -> Vec<Fold> {
             // Every structure and nested section folds on its body, so the
             // header line stays visible.
             "event" | "command" | "function" | "options" | "variables" | "aliases" | "import"
-            | "section" | "entry_section" => {
+            | "class" | "struct" | "method" | "subcommand" | "section" | "entry_section" => {
                 let Some(body) = node.child_by_field_name("body") else {
                     continue;
                 };
@@ -99,7 +99,7 @@ fn summarise(node: Node<'_>, body: Node<'_>, source: &str) -> String {
     let noun: String = match node.kind() {
         "entry_section" => entry_key(node, source).unwrap_or_else(|| "section".into()),
         kind @ ("event" | "command" | "function" | "options" | "variables" | "aliases"
-        | "import") => kind.to_string(),
+        | "import" | "class" | "struct" | "method" | "subcommand") => kind.to_string(),
         _ => "section".to_string(),
     };
     format!(" … {lines} lines of {noun} ")
@@ -126,6 +126,17 @@ mod tests {
         assert_eq!(found[0].start_line, 0);
         assert_eq!(found[0].end_line, 2);
         assert!(found[0].collapsed_text.contains("event"));
+    }
+
+    #[test]
+    fn folds_a_classysk_class_and_each_method() {
+        let found = folds(
+            "class Bar:\n\tpublic a():\n\t\tstop\n\t\tstop\n\tpublic b():\n\t\tstop\n\t\tstop\n",
+        );
+        let spans: Vec<(u32, u32)> = found.iter().map(|f| (f.start_line, f.end_line)).collect();
+        assert_eq!(spans, vec![(0, 6), (1, 3), (4, 6)]);
+        assert!(found[0].collapsed_text.contains("class"));
+        assert!(found[1].collapsed_text.contains("method"));
     }
 
     #[test]

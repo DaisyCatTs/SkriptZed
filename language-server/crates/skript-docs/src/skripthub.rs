@@ -23,7 +23,7 @@
 
 use serde::Deserialize;
 
-use crate::model::{AddonRef, Category, Docs, Entry, Reference, StringOrVec};
+use crate::model::{AddonRef, Category, Docs, Entry, Reference, SectionEntry, StringOrVec};
 
 /// One SkriptHub syntax record.
 #[derive(Debug, Clone, Deserialize)]
@@ -60,6 +60,10 @@ pub struct Record {
     pub event_cancellable: bool,
     #[serde(default)]
     pub keywords: Option<String>,
+    /// The entries a section takes, as a JSON array packed into a string:
+    /// `[{"name": "result", "isRequired": true, "isSection": false}]`.
+    #[serde(default)]
+    pub entries: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +108,29 @@ fn split_patterns(packed: &str) -> Vec<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Unpacks a record's `entries` string.
+///
+/// A malformed string costs that one record its entries and nothing else:
+/// the schema treats the field as free text.
+fn section_entries(packed: Option<&str>) -> Vec<SectionEntry> {
+    let Some(packed) = packed.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Vec::new();
+    };
+    let mut entries: Vec<SectionEntry> = serde_json::from_str(packed).unwrap_or_default();
+    entries.retain(|entry| !entry.name.trim().is_empty());
+    for entry in &mut entries {
+        // `"defaultValue": "null"` is SkriptHub spelling "none", not a value.
+        if entry
+            .default_value
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value == "null")
+        {
+            entry.default_value = None;
+        }
+    }
+    entries
 }
 
 impl Record {
@@ -201,6 +228,9 @@ impl Record {
             cancellable: self.event_cancellable,
             keywords,
             addon,
+            // The catalog has no examples; this is what fetches them on hover.
+            skripthub_id: u64::try_from(self.id).ok().filter(|&id| id > 0),
+            section_entries: section_entries(self.entries.as_deref()),
             ..Default::default()
         };
 
@@ -306,6 +336,50 @@ mod tests {
         assert_eq!(addon.name, "SkBee");
         assert_eq!(addon.since_version.as_deref(), Some("3.6.0"));
         assert_eq!(entry.provider(), "SkBee");
+    }
+
+    #[test]
+    fn an_empty_entries_string_means_no_entries() {
+        let catalog = parse_filtered(SKBEE, |_| true).unwrap();
+        assert!(catalog.docs.effects[0].section_entries.is_empty());
+    }
+
+    /// SkBee's recipe section, as published: `entries` is JSON inside a string,
+    /// and "no default" is the string `"null"`.
+    #[test]
+    fn unpacks_a_sections_entries() {
+        let json = r#"[{"id": 1, "title": "Recipe - Register Shaped Recipe",
+            "syntax_pattern": "register [a] [new] shaped recipe", "syntax_type": "section",
+            "addon": {"name": "SkBee", "link_to_addon": ""},
+            "entries": "[{\"name\": \"result\", \"isRequired\": true, \"isSection\": false}, {\"name\": \"ingredients\", \"isRequired\": true, \"isSection\": true, \"defaultValue\": \"null\"}, {\"name\": \"group\", \"isRequired\": false, \"isSection\": false, \"defaultValue\": \"misc\"}]"}]"#;
+        let catalog = parse_filtered(json, |_| true).unwrap();
+        let entry = &catalog.docs.sections[0];
+        let names: Vec<&str> = entry
+            .section_entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["result", "ingredients", "group"]);
+        let ingredients = entry.section_entry("Ingredients:").unwrap();
+        assert!(ingredients.required && ingredients.section);
+        assert_eq!(ingredients.default_value, None);
+        assert_eq!(
+            entry
+                .section_entry("group")
+                .unwrap()
+                .default_value
+                .as_deref(),
+            Some("misc")
+        );
+    }
+
+    #[test]
+    fn malformed_entries_cost_only_that_record_its_entries() {
+        let json = r#"[{"id": 1, "title": "X", "syntax_pattern": "x", "syntax_type": "section",
+            "entries": "not json"}]"#;
+        let catalog = parse_filtered(json, |_| true).unwrap();
+        assert_eq!(catalog.docs.sections.len(), 1);
+        assert!(catalog.docs.sections[0].section_entries.is_empty());
     }
 
     #[test]

@@ -25,13 +25,15 @@
 //! | `%*type%`       | literal-only slot                                         |
 //! | `%a/b%`         | slot accepting several types                              |
 //! | `<regex>`       | raw regular expression slot                               |
-//! | `:tag` / `1¦`   | parse marks — they select a variant, they match no text   |
+//! | `:x` `tag:` `1:` `1¦` | parse marks: they select a variant, match no text   |
 //! | `\|` `\[` `\]`  | escaped literal                                           |
 //!
 //! Parse marks are the fiddly part: `[:local]` means "optional literal `local`,
 //! and remember that it matched". They must not become part of the literal text.
 
 use std::fmt;
+
+use crate::matcher::sub_words;
 
 /// One element of a pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +102,7 @@ impl Pattern {
         let mut parser = Parser {
             chars: source.char_indices().peekable(),
             source,
+            depth: 0,
         };
         let nodes = parser.parse_sequence(None)?;
         Ok(Self {
@@ -122,7 +125,7 @@ impl Pattern {
         let mut out = Vec::new();
         for node in &self.nodes {
             match node {
-                Node::Literal(text) => out.extend(text.split_whitespace()),
+                Node::Literal(text) => out.extend(sub_words(text)),
                 // A word present in *every* branch is still required, which
                 // rescues patterns like `(is|are) set` whose only mandatory
                 // literal lives inside the choice.
@@ -361,7 +364,7 @@ fn literal_words(nodes: &[Node]) -> Vec<&str> {
     nodes
         .iter()
         .filter_map(|node| match node {
-            Node::Literal(text) => Some(text.split_whitespace()),
+            Node::Literal(text) => Some(sub_words(text)),
             _ => None,
         })
         .flatten()
@@ -390,9 +393,31 @@ fn flatten(nodes: &[Node]) -> Vec<&Node> {
 struct Parser<'a> {
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     source: &'a str,
+    /// How many groups enclose the current position.
+    depth: usize,
 }
 
+/// Far deeper than any real pattern (core Skript's deepest is 5). Patterns
+/// also come from the user's own skript-reflect definitions, and every walk
+/// over a pattern recurses, so `effect [[[[…` two thousand deep overflowed
+/// the stack and took the whole server down.
+const MAX_NESTING: usize = 32;
+
 impl<'a> Parser<'a> {
+    /// A group opened at `offset`, up to its `close`.
+    fn nested(&mut self, offset: usize, close: char) -> Result<Vec<Node>, ParseError> {
+        if self.depth >= MAX_NESTING {
+            return Err(ParseError {
+                message: format!("groups nested deeper than {MAX_NESTING}"),
+                offset,
+            });
+        }
+        self.depth += 1;
+        let inner = self.parse_sequence(Some(close));
+        self.depth -= 1;
+        inner
+    }
+
     /// Parses until `terminator` (or end of input when `None`), splitting on
     /// any top-level `|` into a choice.
     // `flush_literal!` updates `gap` on every path, including the final flush
@@ -450,6 +475,18 @@ impl<'a> Parser<'a> {
         let mut at_alternative_start = true;
 
         while let Some(&(offset, ch)) = self.chars.peek() {
+            if at_alternative_start {
+                if let Some(length) = parse_tag_length(&self.source[offset..]) {
+                    // A parse tag selects a variant and matches no text.
+                    while self
+                        .chars
+                        .next_if(|&(at, _)| at < offset + length)
+                        .is_some()
+                    {}
+                    at_alternative_start = false;
+                    continue;
+                }
+            }
             let consumed_something = !matches!(ch, ' ' | '\t');
             match ch {
                 _ if Some(ch) == terminator => {
@@ -474,7 +511,7 @@ impl<'a> Parser<'a> {
                 '[' => {
                     self.chars.next();
                     flush_literal!();
-                    let inner = self.parse_sequence(Some(']'))?;
+                    let inner = self.nested(offset, ']')?;
                     // `[:tag]` and `[1¦x]` carry a parse mark; the mark itself
                     // matches no text and has already been stripped below.
                     push_group!(Node::Optional(inner));
@@ -482,7 +519,7 @@ impl<'a> Parser<'a> {
                 '(' => {
                     self.chars.next();
                     flush_literal!();
-                    let inner = self.parse_sequence(Some(')'))?;
+                    let inner = self.nested(offset, ')')?;
                     push_group!(match inner.as_slice() {
                         [Node::Choice(_)] => inner.into_iter().next().unwrap(),
                         _ => Node::Choice(vec![inner]),
@@ -500,12 +537,7 @@ impl<'a> Parser<'a> {
                 '<' if self.regex_closes(offset) => {
                     self.chars.next();
                     flush_literal!();
-                    push_group!(Node::Regex(self.take_until('>', offset)?));
-                }
-                ':' if at_alternative_start => {
-                    // `[:local]` — the colon marks the rest as a tagged
-                    // alternative. The tag name is ordinary literal text.
-                    self.chars.next();
+                    push_group!(Node::Regex(self.take_regex(offset)?));
                 }
                 '¦' => {
                     // `1¦value` — a numbered parse mark. Drop the digits that
@@ -570,14 +602,24 @@ impl<'a> Parser<'a> {
     /// less-than? A regex is closed by `>` before the enclosing group ends, so
     /// `<.+>` is a regex while `<)` and `<=)` are the comparison operators.
     fn regex_closes(&self, offset: usize) -> bool {
-        for ch in self.source[offset + 1..].chars() {
-            match ch {
-                '>' => return true,
-                '|' | ')' | ']' | '%' => return false,
-                _ => {}
-            }
+        regex_length(&self.source[offset + 1..]).is_some()
+    }
+
+    /// Consumes a `<regex>`'s body and its closing `>`; the `<` is already
+    /// consumed. See [`regex_length`] for how the end is found.
+    fn take_regex(&mut self, opened_at: usize) -> Result<String, ParseError> {
+        let Some(length) = regex_length(&self.source[opened_at + 1..]) else {
+            return Err(ParseError {
+                message: "unclosed `<`".into(),
+                offset: opened_at,
+            });
+        };
+        let body = self.source[opened_at + 1..opened_at + 1 + length].to_string();
+        // The body, then the `>`.
+        for _ in 0..body.chars().count() + 1 {
+            self.chars.next();
         }
-        false
+        Ok(body)
     }
 
     fn take_until(&mut self, close: char, opened_at: usize) -> Result<String, ParseError> {
@@ -593,6 +635,67 @@ impl<'a> Parser<'a> {
             offset: opened_at,
         })
     }
+}
+
+/// The byte length of a regex body that starts right after a `<`, when that
+/// `<` opens one; `None` when it is a literal less-than.
+///
+/// A regex runs to the `>` that closes it, read as a regex: a `[…]` is a
+/// character class there, not an optional group, and `\>` or a `>` inside a
+/// class does not close it. Treating `[` as Skript's optional bracket turned
+/// ClassySK's `<[A-Z]\w*>` into the literal text `<a-zw*>`, so every addon
+/// pattern with a bracketed regex — ClassySK, oopsk, packet field names — could
+/// never match.
+///
+/// A less-than is told apart by what follows it before any closing `>`: Skript
+/// writes comparison choices as `(<|>)` and `[<=]`, so a `|`, `)` or `]` at the
+/// top level, or a `%`, means the `<` was a literal.
+fn regex_length(rest: &str) -> Option<usize> {
+    let mut depth = 0u32;
+    let mut in_class = false;
+    let mut chars = rest.char_indices();
+    while let Some((at, ch)) = chars.next() {
+        match ch {
+            '\\' => {
+                chars.next();
+            }
+            ']' if in_class => in_class = false,
+            _ if in_class => {}
+            '[' => in_class = true,
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            '>' if depth == 0 => return (at > 0).then_some(at),
+            '|' | ')' | ']' | '%' if depth == 0 => return None,
+            '%' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The byte length of a parse tag at the start of `rest`, colon included.
+///
+/// Skript 2.6 replaced `1¦` with `1:` and added named tags, so an alternative
+/// may open with `:`, `1:`, `-1:` or `name:`: `(1:last|2:first)`,
+/// `(adult:[an] adult|baby:[a] baby)`, `(show|not:hide)`. Only the bare `:`
+/// form used to be stripped, so the others became literal text (`1:last`,
+/// `adult:`) that no line contains, and 26 addon patterns could never match.
+///
+/// `::` is not a tag. It is literal text in skript-reflect style patterns.
+fn parse_tag_length(rest: &str) -> Option<usize> {
+    let name = rest.strip_prefix('-').unwrap_or(rest);
+    let name_length = name
+        .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .unwrap_or(name.len());
+    let after = &name[name_length..];
+    if !after.starts_with(':') || after[1..].starts_with(':') {
+        return None;
+    }
+    // A leading `-` is only part of a numeric tag; `-:` is not a tag.
+    if name.len() != rest.len() && name_length == 0 {
+        return None;
+    }
+    Some(rest.len() - after.len() + 1)
 }
 
 fn finish(mut branches: Vec<Vec<Node>>) -> Vec<Node> {
@@ -740,6 +843,36 @@ mod tests {
         assert!(matches!(pattern.nodes.last(), Some(Node::Regex(r)) if r == ".+"));
     }
 
+    /// `[A-Z]` inside a regex is a character class, not an optional group.
+    /// Misreading it made ClassySK, oopsk and packet-field patterns unmatchable.
+    #[test]
+    fn a_regex_with_a_character_class_stays_a_regex() {
+        let last = |source: &str| Pattern::parse(source).unwrap().nodes.last().cloned();
+        assert_eq!(
+            last(r"class <[A-Z]\w*>"),
+            Some(Node::Regex(r"[A-Z]\w*".into()))
+        );
+        assert_eq!(last(r"[a] <([\w ]+)> struct"), Some(lit("struct")));
+        assert_eq!(last(r"x <[^>]+>"), Some(Node::Regex("[^>]+".into())));
+    }
+
+    /// Skript writes comparison choices with a bare `<`; those stay literal.
+    #[test]
+    fn a_less_than_in_a_choice_is_not_a_regex() {
+        for source in [
+            "%number% (<|>) %number%",
+            "%number% [<=] %number%",
+            "a < %number%",
+        ] {
+            let pattern = Pattern::parse(source).unwrap();
+            assert!(
+                !pattern.has_regex(),
+                "{source} parsed a regex: {:?}",
+                pattern.nodes
+            );
+        }
+    }
+
     #[test]
     fn strips_parse_marks() {
         // `[:local]` must yield the literal `local`, not `:local`.
@@ -789,6 +922,25 @@ mod tests {
         assert!(Pattern::parse("[the").is_err());
         assert!(Pattern::parse("(a|b").is_err());
         assert!(Pattern::parse("%player").is_err());
+    }
+
+    /// Run on a small stack, as the server's main thread is: deep nesting is
+    /// refused rather than recursed into until the stack overflows.
+    #[test]
+    fn refuses_pathologically_deep_nesting() {
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let deep = format!("{}x{}", "[".repeat(5000), "]".repeat(5000));
+                assert!(Pattern::parse(&deep).is_err());
+                let deep = format!("{}x{}", "(".repeat(5000), ")".repeat(5000));
+                assert!(Pattern::parse(&deep).is_err());
+                let fine = format!("{}x{}", "[".repeat(MAX_NESTING), "]".repeat(MAX_NESTING));
+                assert!(Pattern::parse(&fine).is_ok());
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -874,5 +1026,108 @@ mod review_regressions {
                 vec![Node::Literal("second".into())]
             ])]
         );
+    }
+}
+
+#[cfg(test)]
+mod parse_tag_regressions {
+    use super::*;
+
+    fn lit(text: &str) -> Node {
+        Node::Literal(text.to_string())
+    }
+
+    /// Skript 2.6's numbered and named tags. Only the bare `:` used to be
+    /// stripped, so these parsed as the literal text `1:last` and `adult:`.
+    #[test]
+    fn numbered_and_named_tags_are_stripped() {
+        assert_eq!(
+            Pattern::parse("(1:last|2:first) message").unwrap().nodes,
+            vec![
+                Node::Choice(vec![vec![lit("last")], vec![lit("first")]]),
+                lit("message")
+            ]
+        );
+        assert_eq!(
+            Pattern::parse("[-1:temporary|1:permanent] bounds")
+                .unwrap()
+                .nodes,
+            vec![
+                Node::Optional(vec![Node::Choice(vec![
+                    vec![lit("temporary")],
+                    vec![lit("permanent")]
+                ])]),
+                lit("bounds")
+            ]
+        );
+        assert_eq!(
+            Pattern::parse("(show|not:hide) name").unwrap().nodes,
+            vec![
+                Node::Choice(vec![vec![lit("show")], vec![lit("hide")]]),
+                lit("name")
+            ]
+        );
+        // A tag in front of a group, as in `(adult:[an] adult|baby:[a] baby)`.
+        let pattern = Pattern::parse("is (adult:[an] adult|baby:[a] baby)").unwrap();
+        assert_eq!(pattern.required_literals(), vec!["is"]);
+        assert!(!pattern.source().is_empty());
+    }
+
+    #[test]
+    fn a_tag_selects_but_matches_no_text() {
+        let pattern = Pattern::parse("(1:last|2:first) message").unwrap();
+        assert!(crate::matcher::match_pattern(&pattern, "last message").is_some());
+        assert!(crate::matcher::match_pattern(&pattern, "1:last message").is_none());
+    }
+
+    /// `::` is literal text, and a colon later in a word is never a tag.
+    #[test]
+    fn colons_that_are_not_tags_stay_literal() {
+        assert_eq!(parse_tag_length("::x"), None);
+        assert_eq!(parse_tag_length("a::b"), None);
+        assert_eq!(parse_tag_length("-:x"), None);
+        assert_eq!(parse_tag_length("foo bar:x"), None);
+        assert_eq!(parse_tag_length(":x"), Some(1));
+        assert_eq!(parse_tag_length("-1:x"), Some(3));
+        assert_eq!(parse_tag_length("not:x"), Some(4));
+        assert_eq!(
+            Pattern::parse("x %number%:%number%")
+                .unwrap()
+                .required_literals(),
+            vec!["x", ":"]
+        );
+    }
+
+    /// Empty branches, `(s|)` and `(|first|last)`, appear in 95 addon patterns.
+    #[test]
+    fn an_empty_branch_is_an_absent_alternative() {
+        let pattern = Pattern::parse("[the] (|first|last) index of %string%").unwrap();
+        for line in ["the index of x", "first index of x", "the last index of x"] {
+            assert!(
+                crate::matcher::match_pattern(&pattern, line).is_some(),
+                "{line:?}"
+            );
+        }
+        let glued = Pattern::parse("[the] region(s|) %direction%").unwrap();
+        assert!(crate::matcher::match_pattern(&glued, "regions north").is_some());
+        assert!(crate::matcher::match_pattern(&glued, "the region north").is_some());
+    }
+
+    #[test]
+    fn nested_optionals_with_alternatives_match_every_spelling() {
+        let pattern = Pattern::parse("[all [[of] the]|the|every] items").unwrap();
+        for line in [
+            "items",
+            "all items",
+            "all the items",
+            "all of the items",
+            "every items",
+        ] {
+            assert!(
+                crate::matcher::match_pattern(&pattern, line).is_some(),
+                "{line:?}"
+            );
+        }
+        assert!(crate::matcher::match_pattern(&pattern, "of the items").is_none());
     }
 }

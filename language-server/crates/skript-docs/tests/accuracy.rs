@@ -236,6 +236,12 @@ fn classification_accuracy_against_skripts_own_examples() {
     let mut lost: Vec<(String, String, String)> = Vec::new();
     let mut confusion: HashMap<(String, String), (usize, String)> = HashMap::new();
     let mut self_match: HashMap<(Category, usize), bool> = HashMap::new();
+    // `ACCURACY_DUMP=1` prints every line's answer (`CLASSIFIED`) and every
+    // line its own entry does not match (`UNMATCHED`), tab-separated. Diffing
+    // the first between two builds shows what a ranking change moved,
+    // including scaffolding lines no tally can see. Run with
+    // `--test-threads=1`, or other tests' output interleaves.
+    let dump = std::env::var_os("ACCURACY_DUMP").is_some();
 
     for case in &cases {
         let expected = EntryId {
@@ -246,11 +252,14 @@ fn classification_accuracy_against_skripts_own_examples() {
         let tally = per.entry(label(case.category)).or_default();
         tally.total += 1;
 
-        // Is the entry even a candidate? If so, any failure is ranking.
+        // Is the entry even a candidate? If so, any failure is ranking. A
+        // match that explains none of the line is not one: `classify_line`
+        // never picks it, and counting it put every scaffolding line filed
+        // under Conditionals (`implicit:<.+>`) into stratum B.
         let present = catalog
             .classify(&case.probe)
             .iter()
-            .any(|(id, _)| *id == expected);
+            .any(|(id, matched)| *id == expected && matched.explains_text(&case.probe));
         self_match
             .entry((case.category, case.index))
             .and_modify(|seen| *seen |= present)
@@ -272,7 +281,15 @@ fn classification_accuracy_against_skripts_own_examples() {
             "Conditionals" | "While Loop" | "Do If"
         );
 
-        match catalog.classify_line(&case.code, case.role) {
+        let answer = catalog.classify_line(&case.code, case.role);
+        if dump {
+            let name = answer
+                .as_ref()
+                .and_then(|(id, _)| catalog.entry(*id))
+                .map_or("(nothing)", |entry| entry.name.as_str());
+            eprintln!("CLASSIFIED\t{}\t{name}", case.code);
+        }
+        match answer {
             Some((got, _))
                 if wraps_a_condition
                     && got.category == Category::Condition
@@ -293,6 +310,15 @@ fn classification_accuracy_against_skripts_own_examples() {
                 let actual = other
                     .and_then(|(id, _)| catalog.entry(id).map(|e| e.name.clone()))
                     .unwrap_or_else(|| "(nothing)".to_string());
+                if dump && !present {
+                    eprintln!(
+                        "UNMATCHED\t{}\t{}\t{}\t{}",
+                        label(case.category),
+                        expected_entry.name,
+                        actual,
+                        case.code
+                    );
+                }
                 if present {
                     tally.ranked_out += 1;
                     // Stratum B only: the entry's own pattern *did* match, so
@@ -382,29 +408,31 @@ fn classification_accuracy_against_skripts_own_examples() {
     }
 
     // Floors, set below the measured values so this fails on a regression
-    // rather than on an upstream database update.
-    // Measured 99.4% and 9. The floor sits a little below so an upstream
-    // database update cannot fail the build on noise, while a real regression
-    // still does.
+    // rather than on an upstream database update. Measured against Skript
+    // 2.17.1: 834/838 = 99.5%, and 5 entries in stratum C.
     //
     // 100% is not the target and would be the wrong one. The oracle is where
-    // upstream filed each example, and of the five remaining failures two are
-    // ones where this classifier is *right* and the filing is wrong — `if
-    // script named "x.sk" is loaded:` answers Is Script Loaded rather than the
-    // generic Is Loaded it is filed under. Driving this to 100% would mean
-    // making those answers worse.
+    // upstream filed each example. Of the four remaining failures, two are
+    // lines this classifier gets *right* under the wrong filing: `if script
+    // named "x.sk" is loaded:` is Is Script Loaded, not the generic Is Loaded,
+    // and `clear drops` is Cancel Drops, not Change. The other two need types
+    // the matcher cannot know: `the player has a potion effect of speed` ties
+    // exactly between Has Potion Effect and Contains, and `loop items in
+    // player's inventory` reaches For Each Loop because only SecFor's Java code
+    // (not its pattern) says its `%~object%` must be a variable.
     assert!(
-        stratum_b >= 98.5,
-        "ranking accuracy fell to {stratum_b:.1}% (floor 98.5%)"
+        stratum_b >= 99.0,
+        "ranking accuracy fell to {stratum_b:.1}% (floor 99.0%)"
     );
-    // The nine that remain are upstream documentation errors, not matcher
+    // The five that remain are upstream documentation errors, not matcher
     // defects: `Is Transparent`'s example ends in a full stop its pattern does
     // not have, `Egg Will Hatch` documents `[the] egg` but exemplifies
-    // `an entity`, `Exit` allows `[1|a|the|this] section` but shows
-    // `exit 2 sections`, and `Will Despawn` is two entries sharing one name.
+    // `an entity`, Consume Boosting Firework's example says `consume` for
+    // `consumed`, and Apply Fishing Lure and Will Despawn are each two entries
+    // sharing one name, with examples filed under the wrong one.
     assert!(
-        unmatched.len() <= 12,
-        "{} entries match none of their own examples (ceiling 12)",
+        unmatched.len() <= 7,
+        "{} entries match none of their own examples (ceiling 7)",
         unmatched.len()
     );
 }

@@ -11,8 +11,9 @@
 //! to `function payout()`, which is exactly right: both are places the function
 //! runs from.
 //!
-//! Everything here is pure and takes a borrowed [`Workspace`], so it is
-//! testable without an LSP session.
+//! The tree itself is pure and takes a borrowed [`Workspace`], so it is
+//! testable without an LSP session. The request handlers at the end only
+//! convert to and from protocol types.
 
 use skript_index::{Document, Range, Symbol, SymbolKind, Workspace};
 
@@ -87,7 +88,7 @@ pub fn outgoing<'a>(workspace: &'a Workspace, node: &Node<'a>) -> Vec<Call<'a>> 
     let mut out: Vec<Call<'a>> = Vec::new();
 
     for reference in &node.document.symbols().references {
-        if !reference.kind.is_function() || !encloses(node.symbol.range, reference.range) {
+        if !reference.kind.is_function() || !node.symbol.range.encloses(reference.range) {
             continue;
         }
         for (document, symbol) in
@@ -121,15 +122,7 @@ fn push<'a>(out: &mut Vec<Call<'a>>, document: &'a Document, symbol: &'a Symbol,
 /// Only the outermost level is considered. A call inside a nested `if` belongs
 /// to the trigger, not to the `if` — nesting is control flow, not a caller.
 fn enclosing(document: &Document, range: Range) -> Option<&Symbol> {
-    document
-        .symbols()
-        .symbols
-        .iter()
-        .find(|symbol| encloses(symbol.range, range))
-}
-
-fn encloses(outer: Range, inner: Range) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
+    document.symbols().enclosing(range, |_| true)
 }
 
 /// How a node should read in the tree.
@@ -141,6 +134,109 @@ pub fn detail(symbol: &Symbol) -> Option<String> {
         SymbolKind::LocalFunction => Some(format!("local · {}", symbol.detail).trim_end().into()),
         _ => (!symbol.detail.is_empty()).then(|| symbol.detail.clone()),
     }
+}
+
+// ------------------------------------------------------------ request glue
+
+use tower_lsp::lsp_types as lsp;
+
+use crate::convert::{from_lsp_position, to_lsp_range, Encoding};
+use crate::outline::lsp_symbol_kind;
+use crate::server::State;
+
+/// Opens a call hierarchy on the function under the cursor.
+///
+/// Answers what a flat reference list cannot: which trigger or function each
+/// call sits *inside*. See the module docs for why an event counts as a
+/// caller.
+pub fn prepare_request(
+    state: &State,
+    params: &lsp::CallHierarchyPrepareParams,
+) -> Option<Vec<lsp::CallHierarchyItem>> {
+    let position = &params.text_document_position_params;
+    let document = state.workspace.get(position.text_document.uri.as_str())?;
+    let position = from_lsp_position(document.text(), position.position, state.encoding);
+    let items: Vec<_> = prepare(&state.workspace, document, position)
+        .iter()
+        .filter_map(|node| item(node, state.encoding))
+        .collect();
+    (!items.is_empty()).then_some(items)
+}
+
+pub fn incoming_request(
+    state: &State,
+    params: &lsp::CallHierarchyIncomingCallsParams,
+) -> Option<Vec<lsp::CallHierarchyIncomingCall>> {
+    let node = resolve_item(&state.workspace, &params.item, state.encoding)?;
+    let calls = incoming(&state.workspace, &node)
+        .iter()
+        .filter_map(|call| {
+            Some(lsp::CallHierarchyIncomingCall {
+                from: item(&call.node, state.encoding)?,
+                from_ranges: lsp_ranges(call.node.document, &call.ranges, state.encoding),
+            })
+        })
+        .collect();
+    Some(calls)
+}
+
+pub fn outgoing_request(
+    state: &State,
+    params: &lsp::CallHierarchyOutgoingCallsParams,
+) -> Option<Vec<lsp::CallHierarchyOutgoingCall>> {
+    let node = resolve_item(&state.workspace, &params.item, state.encoding)?;
+    // The call sites are in the *caller's* file, which is the item we were
+    // asked about, not in the callee's, which is where `call.node` lives.
+    let calls = outgoing(&state.workspace, &node)
+        .iter()
+        .filter_map(|call| {
+            Some(lsp::CallHierarchyOutgoingCall {
+                to: item(&call.node, state.encoding)?,
+                from_ranges: lsp_ranges(node.document, &call.ranges, state.encoding),
+            })
+        })
+        .collect();
+    Some(calls)
+}
+
+/// Converts a hierarchy node into the item a client renders.
+fn item(node: &Node<'_>, encoding: Encoding) -> Option<lsp::CallHierarchyItem> {
+    let text = node.document.text();
+    Some(lsp::CallHierarchyItem {
+        name: node.symbol.name.clone(),
+        kind: lsp_symbol_kind(node.symbol.kind),
+        tags: None,
+        detail: detail(node.symbol),
+        uri: lsp::Url::parse(node.document.uri()).ok()?,
+        range: to_lsp_range(text, node.symbol.range, encoding),
+        selection_range: to_lsp_range(text, node.symbol.selection_range, encoding),
+        data: None,
+    })
+}
+
+/// Finds the declaration a client's item refers to.
+///
+/// The item is round-tripped through the client, so nothing in it can be
+/// trusted to still be valid: the document may have been edited, or closed and
+/// reopened, since it was handed out. Re-resolving by position is what keeps a
+/// stale item from producing a hierarchy for the wrong function.
+fn resolve_item<'a>(
+    workspace: &'a Workspace,
+    item: &lsp::CallHierarchyItem,
+    encoding: Encoding,
+) -> Option<Node<'a>> {
+    let document = workspace.get(item.uri.as_str())?;
+    let position = from_lsp_position(document.text(), item.selection_range.start, encoding);
+    let symbol = document.symbols().declaration_at(position)?;
+    (symbol.name == item.name).then_some(Node { document, symbol })
+}
+
+/// Call-site ranges, resolved against the document they were found in.
+fn lsp_ranges(document: &Document, ranges: &[Range], encoding: Encoding) -> Vec<lsp::Range> {
+    ranges
+        .iter()
+        .map(|range| to_lsp_range(document.text(), *range, encoding))
+        .collect()
 }
 
 #[cfg(test)]

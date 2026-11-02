@@ -221,16 +221,18 @@ on join:
 (source_file
   (event
     (keyword)
-    (identifier)
-    (block
+    name: (identifier)
+    body: (block
       (statement
         (identifier)
-        (string))
+        (string
+          (option_ref
+            name: (option_name))))
       (section
-        (identifier)
-        (option_ref
-          (option_name))
-        (block
+        header: (identifier)
+        header: (option_ref
+          name: (option_name))
+        body: (block
           (statement
             (identifier)))))))
 

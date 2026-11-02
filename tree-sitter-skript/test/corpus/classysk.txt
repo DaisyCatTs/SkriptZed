@@ -1,0 +1,240 @@
+================================================================================
+ClassySK class with fields
+================================================================================
+
+class Wallet:
+	public owner: offline player
+	private balance: number = 0
+	private static const limit: number = 1000 # hard cap
+	public static const static: integer
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (class
+    (keyword)
+    name: (identifier)
+    body: (class_body
+      (class_field
+        (modifier)
+        name: (identifier)
+        type: (type))
+      (class_field
+        (modifier)
+        name: (identifier)
+        type: (type)
+        value: (number))
+      (class_field
+        (modifier)
+        (modifier)
+        (modifier)
+        name: (identifier)
+        type: (type)
+        value: (number)
+        (comment))
+      (class_field
+        (modifier)
+        (modifier)
+        (modifier)
+        name: (identifier)
+        type: (type)))))
+
+================================================================================
+ClassySK methods
+================================================================================
+
+class Wallet:
+	public deposit(amount: number, note?: text) :: boolean:
+		add {_amount} to self::balance
+		return true
+
+	private static clamp(1: number) returns number:
+		return {_1}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (class
+    (keyword)
+    name: (identifier)
+    body: (class_body
+      (method
+        (modifier)
+        name: (identifier)
+        parameters: (parameter_list
+          (parameter
+            name: (identifier)
+            type: (type))
+          (parameter
+            name: (identifier)
+            (operator)
+            type: (type)))
+        (return_marker)
+        return_type: (type)
+        body: (block
+          (statement
+            (identifier)
+            (variable
+              scope: (variable_scope)
+              name: (variable_name
+                (variable_text)))
+            (identifier)
+            (identifier)
+            (member_access
+              (punctuation)
+              member: (identifier)))
+          (statement
+            (identifier)
+            (boolean))))
+      (method
+        (modifier)
+        (modifier)
+        name: (identifier)
+        parameters: (parameter_list
+          (parameter
+            name: (identifier)
+            type: (type)))
+        (return_marker)
+        return_type: (type)
+        body: (block
+          (statement
+            (identifier)
+            (variable
+              scope: (variable_scope)
+              name: (variable_name
+                (variable_text)))))))))
+
+================================================================================
+ClassySK member access and construction
+================================================================================
+
+on join:
+	set {_w} to new instance of Wallet:
+		owner: player
+	{_w}::deposit(5, "welcome")
+	send "%{_w}::balance%" to player
+	set {_cap} to Wallet::limit
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    (keyword)
+    name: (identifier)
+    body: (block
+      (section
+        header: (identifier)
+        header: (variable
+          scope: (variable_scope)
+          name: (variable_name
+            (variable_text)))
+        header: (identifier)
+        header: (identifier)
+        header: (identifier)
+        header: (identifier)
+        header: (identifier)
+        body: (block
+          (statement
+            (identifier)
+            (punctuation)
+            (identifier))))
+      (statement
+        (variable
+          scope: (variable_scope)
+          name: (variable_name
+            (variable_text)))
+        (member_access
+          (punctuation)
+          member: (method_call
+            name: (identifier)
+            arguments: (number)
+            arguments: (punctuation)
+            arguments: (string))))
+      (statement
+        (identifier)
+        (string
+          (interpolation
+            (variable
+              scope: (variable_scope)
+              name: (variable_name
+                (variable_text)))
+            (interpolation_text)))
+        (identifier)
+        (identifier))
+      (statement
+        (identifier)
+        (variable
+          scope: (variable_scope)
+          name: (variable_name
+            (variable_text)))
+        (identifier)
+        (identifier)
+        (member_access
+          (punctuation)
+          member: (identifier))))))
+
+================================================================================
+Spaced double colon is not member access
+================================================================================
+
+test "nested header":
+	parse:
+		function a() :: object:
+			return 1
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (event
+    name: (identifier)
+    name: (string)
+    body: (block
+      (section
+        header: (identifier)
+        body: (block
+          (section
+            header: (identifier)
+            header: (function_call
+              name: (identifier))
+            header: (punctuation)
+            header: (punctuation)
+            header: (identifier)
+            body: (block
+              (statement
+                (identifier)
+                (number)))))))))
+
+================================================================================
+oopsk struct
+================================================================================
+
+struct Message:
+	contents: string
+	const timestamp: date = now
+	converts to:
+		string via this->contents
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (struct
+    (keyword)
+    name: (identifier)
+    body: (entry_body
+      (entry
+        key: (entry_key)
+        value: (identifier))
+      (entry
+        key: (entry_key)
+        value: (identifier)
+        value: (operator)
+        value: (identifier))
+      (entry_section
+        key: (entry_key)
+        body: (block
+          (statement
+            (identifier)
+            (identifier)
+            (word)
+            (operator)
+            (identifier)))))))

@@ -40,6 +40,10 @@
         "named": true
       },
       {
+        "type": "member_access",
+        "named": true
+      },
+      {
         "type": "number",
         "named": true
       },
@@ -82,6 +86,10 @@
         "named": true
       },
       {
+        "type": "class",
+        "named": true
+      },
+      {
         "type": "command",
         "named": true
       },
@@ -99,6 +107,10 @@
       },
       {
         "type": "options",
+        "named": true
+      },
+      {
+        "type": "struct",
         "named": true
       },
       {
@@ -250,6 +262,10 @@
         {
           "type": "statement",
           "named": true
+        },
+        {
+          "type": "subcommand",
+          "named": true
         }
       ]
     }
@@ -258,6 +274,135 @@
     "type": "boolean",
     "named": true,
     "fields": {}
+  },
+  {
+    "type": "class",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "class_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_content_item",
+          "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "class_body",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "block_comment",
+          "named": true
+        },
+        {
+          "type": "class_field",
+          "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "method",
+          "named": true
+        },
+        {
+          "type": "section",
+          "named": true
+        },
+        {
+          "type": "statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "class_field",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "_content_item",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "modifier",
+          "named": true
+        }
+      ]
+    }
   },
   {
     "type": "command",
@@ -410,6 +555,10 @@
         },
         {
           "type": "statement",
+          "named": true
+        },
+        {
+          "type": "subcommand",
           "named": true
         }
       ]
@@ -606,6 +755,11 @@
     }
   },
   {
+    "type": "identifier",
+    "named": true,
+    "fields": {}
+  },
+  {
     "type": "import",
     "named": true,
     "fields": {
@@ -680,6 +834,131 @@
         }
       ]
     }
+  },
+  {
+    "type": "member_access",
+    "named": true,
+    "fields": {
+      "member": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "method_call",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "punctuation",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "method",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "parameters": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "parameter_list",
+            "named": true
+          }
+        ]
+      },
+      "return_type": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "type",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "modifier",
+          "named": true
+        },
+        {
+          "type": "return_marker",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "method_call",
+    "named": true,
+    "fields": {
+      "arguments": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "_content_item",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "modifier",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "operator",
@@ -766,6 +1045,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "operator",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -889,6 +1178,94 @@
         },
         {
           "type": "legacy_color",
+          "named": true
+        },
+        {
+          "type": "option_ref",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "struct",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "entry_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "keyword",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "subcommand",
+    "named": true,
+    "fields": {
+      "argument": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "command_argument",
+            "named": true
+          }
+        ]
+      },
+      "body": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "entry_body",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "_content_item",
+          "named": true
+        },
+        {
+          "type": "comment",
+          "named": true
+        },
+        {
+          "type": "keyword",
           "named": true
         }
       ]
@@ -1104,6 +1481,10 @@
     "named": true
   },
   {
+    "type": "const",
+    "named": false
+  },
+  {
     "type": "duration",
     "named": true
   },
@@ -1140,10 +1521,6 @@
     "named": true
   },
   {
-    "type": "identifier",
-    "named": true
-  },
-  {
     "type": "import_path",
     "named": true
   },
@@ -1176,8 +1553,20 @@
     "named": true
   },
   {
+    "type": "private",
+    "named": false
+  },
+  {
+    "type": "public",
+    "named": false
+  },
+  {
     "type": "return_marker",
     "named": true
+  },
+  {
+    "type": "static",
+    "named": false
   },
   {
     "type": "true",

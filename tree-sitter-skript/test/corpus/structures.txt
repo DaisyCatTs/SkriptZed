@@ -243,3 +243,89 @@ automatically reload this script
   (auto_reload
     (keyword)
     (keyword)))
+
+================================================================================
+Command with subcommands
+================================================================================
+
+command /bank <number>:
+	subcommand <number>:
+		trigger:
+			stop
+	subcommands:
+		subcommand [help]:
+			trigger:
+				stop
+	trigger:
+		stop
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (command
+    (keyword)
+    name: (command_name)
+    argument: (command_argument
+      (punctuation)
+      spec: (argument_spec)
+      (punctuation))
+    body: (entry_body
+      (subcommand
+        (keyword)
+        argument: (command_argument
+          (punctuation)
+          spec: (argument_spec)
+          (punctuation))
+        body: (entry_body
+          (entry_section
+            key: (entry_key)
+            body: (block
+              (statement
+                (identifier))))))
+      (entry_section
+        key: (entry_key)
+        body: (block
+          (subcommand
+            (keyword)
+            (punctuation)
+            (identifier)
+            (punctuation)
+            body: (entry_body
+              (entry_section
+                key: (entry_key)
+                body: (block
+                  (statement
+                    (identifier))))))))
+      (entry_section
+        key: (entry_key)
+        body: (block
+          (statement
+            (identifier)))))))
+
+==================
+skript-reflect local effect
+==================
+
+local effect greet %player%:
+	trigger:
+		send "hi" to expr-1
+
+---
+
+(source_file
+  (event
+    (keyword)
+    name: (identifier)
+    name: (identifier)
+    name: (punctuation)
+    name: (identifier)
+    name: (punctuation)
+    body: (block
+      (section
+        header: (identifier)
+        body: (block
+          (statement
+            (identifier)
+            (string)
+            (identifier)
+            (word)))))))

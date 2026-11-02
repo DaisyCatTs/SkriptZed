@@ -11,18 +11,21 @@ and is usable on its own.
 
 Skript has **no context-free grammar**. Every effect, condition, expression,
 event and section is a pattern string registered at *runtime* by Skript or an
-addon — 2,660 of them in core Skript 2.16 alone, and nothing lexical
+addon (2,703 of them in core Skript 2.17.1 alone), and nothing lexical
 distinguishes `set {_x} to 5` (an effect) from `player is op` (a condition).
 
 So this grammar owns **structure only**: lines and indentation, sections,
 strings and their `%…%` interpolation, variables and their scope sigils,
-comments, colour codes, and the handful of headers with a fixed shape
-(`command`, `function`, `options`, `variables`, `aliases`, `import`, `using`,
-`auto reload`). It never tries to classify a statement, because it cannot.
+comments, colour codes, and the handful of headers with a fixed shape:
+`command` and its Skript 2.17 `subcommand`s, `function`, `options`,
+`variables`, `aliases`, `using`, `auto reload`, and three from addons:
+skript-reflect's `import`, ClassySK's `class` (fields, methods, `::` member
+access) and oopsk's `struct`. It never tries to classify a statement, because
+it cannot.
 
 Classification is a separate problem, solved by a language server that matches
 each line against Skript's published syntax database. Highlighting ordinary
-statement prose is therefore *not* this grammar's job — see
+statement prose is therefore *not* this grammar's job; see
 [the architecture notes](https://github.com/DaisyCatTs/SkriptZed/blob/main/docs/architecture.md).
 
 ## Layout
@@ -53,8 +56,9 @@ npx tree-sitter generate     # after any grammar.js or scanner.c change
 npx tree-sitter test
 ```
 
-The larger gate is the upstream corpus — roughly 540 real `.sk` files from
-SkriptLang's own repository, all of which must parse with zero ERROR nodes:
+The larger gate is the upstream corpus: all 587 `.sk` files in SkriptLang's
+own repository (as of Skript 2.17.1) must parse with zero ERROR or MISSING
+nodes. The harness lives in the parent repository:
 
 ```sh
 node ../scripts/parse-corpus.mjs --strict
@@ -62,4 +66,4 @@ node ../scripts/parse-corpus.mjs --strict
 
 ## Licence
 
-MIT. See [LICENSE](../LICENSE).
+MIT. See [LICENSE](LICENSE).

@@ -7,8 +7,8 @@
  * Skript (https://github.com/SkriptLang/Skript) is a Minecraft server scripting
  * language with no context-free grammar: every effect, condition, expression,
  * event and section is a *pattern string* registered at runtime by Skript or an
- * addon, and matched against the line by `SkriptParser`. Core Skript 2.16 alone
- * registers 2,117 such patterns; addons register thousands more.
+ * addon, and matched against the line by `SkriptParser`. Core Skript 2.17.1
+ * alone publishes 2,703 such patterns; addons register thousands more.
  *
  * Therefore this grammar deliberately models STRUCTURE, not SEMANTICS:
  *
@@ -16,8 +16,10 @@
  *   - strings and their `%interpolation%` / `<format tags>` / `&c` colour codes
  *   - variables `{x}` `{_x}` `{-x}` `{x::*}` and options `{@x}`
  *   - comments, including `###` block comments and the `#-#` section suppressor
- *   - the structure headers that DO have a fixed shape: command, function,
- *     options, variables, aliases, using, auto reload
+ *   - the structure headers that DO have a fixed shape: command (and its
+ *     Skript 2.17 subcommands), function, options, variables, aliases, using,
+ *     auto reload, and three from addons: skript-reflect's `import`,
+ *     ClassySK's `class` and oopsk's `struct`
  *
  * It never tries to decide whether `set {_x} to 5` is an effect or whether
  * `player is op` is a condition — that is the language server's job, and the
@@ -82,9 +84,13 @@ module.exports = grammar({
     [$.variables],
     [$.aliases],
     [$.import],
+    [$.class],
+    [$.struct],
+    [$.method],
     [$.event],
     [$.section],
     [$.entry_section],
+    [$.subcommand],
   ],
 
   supertypes: $ => [
@@ -108,6 +114,8 @@ module.exports = grammar({
       $.import,
       $.using,
       $.auto_reload,
+      $.class,
+      $.struct,
       $.event,
     ),
 
@@ -170,7 +178,13 @@ module.exports = grammar({
     parameter_list: $ => seq($.parameter, repeat(seq(',', $.parameter))),
 
     parameter: $ => seq(
-      field('name', $.identifier),
+      // ClassySK names a parameter `[_a-zA-Z0-9]+`, so `x(1: integer)` is a
+      // method taking `{_1}`. Skript's own functions reject a numeric name, but
+      // a header that cannot run should still parse — see `function`.
+      field('name', choice($.identifier, alias($.number, $.identifier))),
+      // ClassySK marks an optional method parameter `name?: type`. Skript's own
+      // functions never use it, so accepting it here costs them nothing.
+      optional(alias('?', $.operator)),
       ':',
       field('type', alias(/[^,)=]+/, $.type)),
       optional(seq('=', field('default', $.default_value))),
@@ -235,12 +249,100 @@ module.exports = grammar({
       $._newline,
     ),
 
+    // ClassySK's `class Name:` (https://github.com/novystar/ClassySK). The
+    // addon registers it as the structure `class <[A-Z]\w*>`, so like `import`
+    // it has a fixed shape the grammar can own — and a class body is not a
+    // trigger: its lines declare fields and methods rather than run.
+    //
+    // Anything after the name is accepted, so a header written for a later
+    // ClassySK (its roadmap lists inheritance) still parses; the language
+    // server is the one to say what is wrong with it.
+    class: $ => seq(
+      alias('class', $.keyword),
+      field('name', $.identifier),
+      repeat($._content_item),
+      $._section_colon,
+      optional($.comment),
+      optional(field('body', $.class_body)),
+    ),
+
+    // oopsk's `struct Message:` (https://github.com/sovdeeth/oopsk), registered
+    // as `struct <name>`. Its body is `field: type [= default]` lines, an
+    // optional `const` in front, and a `converts to:` section — exactly the
+    // `key: value` shape of a command's entries, so it reuses `entry_body`.
+    struct: $ => seq(
+      alias('struct', $.keyword),
+      field('name', $.identifier),
+      $._section_colon,
+      optional($.comment),
+      optional(field('body', $.entry_body)),
+    ),
+
+    class_body: $ => seq(
+      $._indent,
+      repeat1(choice(
+        $.class_field,
+        $.method,
+        $.section,
+        $.statement,
+        $.comment,
+        $.block_comment,
+      )),
+      $._dedent,
+    ),
+
+    // `public kills: integer`, `private static const max: number = 5`
+    // ClassySK: `(public|private) [static] [const] <name>: %*classinfo% [= <.+>]`
+    class_field: $ => seq(
+      repeat1($.modifier),
+      field('name', $._member_name),
+      optional(seq(
+        ':',
+        field('type', alias(/[^=#\r\n]+/, $.type)),
+        optional(seq('=', field('value', $._content))),
+      )),
+      optional($.comment),
+      $._newline,
+    ),
+
+    // `public play(value: string, duration: timespan):`
+    // `private static max(a: number, b: number) :: number:`
+    // ClassySK: `(public|private) [static] <name>([<.+>]) [(::|returns|->) %-*classinfo%]`
+    method: $ => seq(
+      repeat1($.modifier),
+      field('name', $._member_name),
+      token.immediate('('),
+      optional(field('parameters', $.parameter_list)),
+      ')',
+      optional(seq(
+        alias(choice('::', '->', 'returns'), $.return_marker),
+        field('return_type', alias(/[^:#\n]+/, $.type)),
+      )),
+      $._section_colon,
+      optional($.comment),
+      optional(field('body', $.block)),
+    ),
+
+    // Plain strings so keyword extraction applies: they are keywords only where
+    // a class body allows one, and ordinary identifiers everywhere else.
+    modifier: _ => choice('public', 'private', 'static', 'const'),
+
+    // ClassySK's own tests declare `public static const static: integer`: a
+    // member may be named after a modifier, so the name position takes one
+    // too. Which word is the name is settled by the `:` or `(` after it.
+    _member_name: $ => choice($.identifier, alias($.modifier, $.identifier)),
+
     // Any other top-level section is an event: `on join:`, `first join:`,
     // `on damage of player with priority high:`.
     // Skript registers this as
     //   `[on] [uncancelled|cancelled|(any|all)] <.+> [with priority …]`
     // so the modifier follows `on` rather than preceding it.
+    //
+    // skript-reflect's file-scoped syntax (`local effect greet %player%:`)
+    // lands here too. `local` has to be spelt out: it is a keyword (for
+    // `local function`), so an event name could never start with it.
     event: $ => seq(
+      optional(alias('local', $.keyword)),
       optional(alias('on', $.keyword)),
       optional(field('modifier', $.event_modifier)),
       field('name', $._content),
@@ -263,7 +365,11 @@ module.exports = grammar({
       $._dedent,
     ),
 
-    _block_item: $ => choice($.section, $.statement, $.comment, $.block_comment),
+    // `subcommand` is listed for the ones nested in a `subcommands:` group,
+    // whose body is an ordinary block. No pattern in Skript or any of the
+    // 8,712 SkriptHub records starts with the word, so claiming it here
+    // cannot steal a statement.
+    _block_item: $ => choice($.subcommand, $.section, $.statement, $.comment, $.block_comment),
 
     // Any line ending in a section colon opens a nested block. We do NOT
     // enumerate section keywords: any addon can register an effect-section.
@@ -279,8 +385,34 @@ module.exports = grammar({
     // `key: value` bodies — command entries, `options:`, Skript config files.
     entry_body: $ => seq(
       $._indent,
-      repeat1(choice($.entry, $.entry_section, $.section, $.statement, $.comment, $.block_comment)),
+      repeat1(choice(
+        $.subcommand,
+        $.entry,
+        $.entry_section,
+        $.section,
+        $.statement,
+        $.comment,
+        $.block_comment,
+      )),
       $._dedent,
+    ),
+
+    // `subcommand <number>:` / `subcommand [help]:` — Skript 2.17. The pattern
+    // is a command pattern, `<argument>` slots included, and the body takes
+    // the same entries as a command (`trigger:`, `executable by:`, …).
+    //
+    // The keyword has to out-rank `entry_key`, whose regex would otherwise
+    // take `subcommand ` and then fail on the `<`. Requiring whitespace after
+    // it is what keeps the `subcommands:` group entry an ordinary key.
+    subcommand: $ => seq(
+      alias(token(prec(2, /subcommand[ \t]+/)), $.keyword),
+      repeat(choice(
+        field('argument', $.command_argument),
+        $._content_item,
+      )),
+      $._section_colon,
+      optional($.comment),
+      optional(field('body', $.entry_body)),
     ),
 
     entry: $ => seq(
@@ -329,6 +461,7 @@ module.exports = grammar({
       $.variable,
       $.option_ref,
       $.function_call,
+      $.member_access,
       $.duration,
       $.number,
       $.boolean,
@@ -360,6 +493,30 @@ module.exports = grammar({
       ')',
     )),
 
+    // ClassySK's `self::kills`, `{_stats}::reset()`, `PlayerStats::create()`.
+    //
+    // Outside a variable's braces Skript itself never writes `::` — across the
+    // 587 scripts it ships, every one is a function's return marker — so this
+    // cannot reshape ordinary Skript. A method is aliased away from
+    // `function_call` because it is not one: indexing `self::start()` as a call
+    // to a Skript function named `start` is what made the language server
+    // report every method call in a ClassySK script as undeclared.
+    //
+    // The `::` must touch what precedes it. That is how every access is
+    // written, and it keeps a function header nested in a `parse:` block —
+    // `function a() :: object:`, which Skript's own tests do — out of it.
+    // The exception: `literal multiple infos warning.sk` (Skript 2.17) writes
+    // `function a():: object:` with no space, and there the `:: object` does
+    // parse as a member access. It is test data inside a `parse:` section, and
+    // the file still parses without an error.
+    member_access: $ => seq(
+      alias(token.immediate('::'), $.punctuation),
+      field('member', choice(
+        alias($.function_call, $.method_call),
+        $.identifier,
+      )),
+    ),
+
     // ------------------------------------------------------------------ atoms
 
     string: $ => seq(
@@ -369,6 +526,11 @@ module.exports = grammar({
         $.interpolation,
         $.format_tag,
         $.legacy_color,
+        // Skript substitutes options before it parses anything, strings
+        // included, so `"{@prefix} hi"` uses an option. Reading it as text hid
+        // the reference from navigation and from the unknown-option check —
+        // in the place options are written most.
+        $.option_ref,
         $._string_text,
       )),
       '"',
@@ -401,7 +563,7 @@ module.exports = grammar({
     // Skript's less-than, and `format_tag`'s `[^<>%"\n]*` body would happily
     // swallow `< 5 and {_b} >` out of `if {_a} < 5 and {_b} > 3:`. So the tag
     // must open with a tag character *immediately* after the `<`, and the name
-    // may not contain whitespace — every `<` comparison in the 540-file corpus
+    // may not contain whitespace — every `<` comparison in the 587-file corpus
     // is written `< ` with a space, and every real tag is written without one.
     //
     // The body excludes `<`, `>`, `"`, `{`, `}` and newline, so a tag can never
@@ -426,7 +588,9 @@ module.exports = grammar({
       seq('&#', /[0-9a-fA-F]{6}/),
     ))),
 
-    _string_text: _ => token(prec(-1, choice(/[^"%<&\n]+/, '<', '&'))),
+    // Stops at `{` so `{@option}` can be recognised inside a string; a `{` that
+    // opens nothing is still text, one character at a time.
+    _string_text: _ => token(prec(-1, choice(/[^"%<&{\n]+/, '<', '&', '{'))),
 
     // `{x}` global · `{_x}` local · `{-x}` ephemeral · `{x::*}` list
     variable: $ => seq(

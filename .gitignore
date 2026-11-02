@@ -5,7 +5,8 @@ target/
 # Node
 node_modules/
 
-# Zed extension build artifacts — Zed clones grammars here itself
+# Zed extension build artifacts. Zed clones and compiles the grammar here, and
+# scripts/dev-setup.mjs does the same when Zed's wasi-sdk is installed.
 extension/grammars/
 extension/*.wasm
 
@@ -18,7 +19,9 @@ extension/*.wasm
 *.dll
 tree-sitter-skript/build/
 
-# Vendored upstream corpus (fetched by scripts/fetch-corpus.sh)
+# Third-party data, never committed: the upstream corpus for the corpus gate
+# (scripts/parse-corpus.mjs prints the clone steps) and the GPL-3.0 docs.json /
+# unlicensed SkriptHub catalog that scripts/fetch-*.mjs place for the tests.
 vendor/
 
 # Editor / OS
@@ -28,7 +31,7 @@ desktop.ini
 
 # Local Zed settings. These point `lsp.skript-lsp.binary.path` at an absolute
 # path on one machine, so they are per-developer rather than per-project.
-# `docs/installation.md` documents what to put here.
+# CONTRIBUTING.md shows what to put here.
 .zed/
 
 # Local tooling and editor config

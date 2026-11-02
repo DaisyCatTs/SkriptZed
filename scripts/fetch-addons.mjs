@@ -8,21 +8,21 @@
 //
 //   node scripts/fetch-addons.mjs
 //
-// Without it, the tests that exercise all 12,877 real addon patterns skip
-// rather than fail, so a fresh clone still gets a green `cargo test`.
+// Without it, the tests that exercise every real addon pattern (13,661 across
+// 174 addons when last measured) skip rather than fail, so a fresh clone still
+// gets a green `cargo test`.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+import { repoRoot as root } from './lib/paths.mjs';
 const url = process.env.SKRIPTHUB_URL ?? 'https://skripthub.net/api/v1/addonsyntaxlist/';
 const out = join(root, 'vendor', 'addons.json');
 
 console.log(`==> ${url}`);
-console.log('    (7.3 MB, ~1.2 MB over the wire — there is no per-addon endpoint)');
+console.log('    (about 8 MB, much less over the wire; there is no per-addon endpoint)');
 
-// gzip cuts this from 7.3 MB to 1.2 MB and the server honours it.
+// The server honours gzip, which shrinks the transfer severalfold.
 const response = await fetch(url, { headers: { 'Accept-Encoding': 'gzip' } });
 if (!response.ok) {
   console.error(`failed: HTTP ${response.status} ${response.statusText}`);

@@ -9,14 +9,14 @@
 //   node scripts/fetch-docs.mjs                 # latest
 //   node scripts/fetch-docs.mjs 2.15.3          # a pinned version
 //
-// Without it, the tests that exercise all 2,117 real patterns skip rather than
-// fail, so a fresh clone still gets a green `cargo test`.
+// Without it, the tests that exercise every real pattern (2,703 in Skript
+// 2.17.1) skip rather than fail, so a fresh clone still gets a green
+// `cargo test`.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+import { repoRoot as root } from './lib/paths.mjs';
 const version = process.argv[2];
 
 const url =
@@ -50,11 +50,14 @@ try {
   process.exit(1);
 }
 
-const entries = ['conditions', 'effects', 'expressions', 'events', 'structures', 'sections', 'types', 'functions']
-  .reduce((total, key) => total + (parsed[key]?.length ?? 0), 0);
-const patterns = ['conditions', 'effects', 'expressions', 'events', 'structures', 'sections']
-  .flatMap(key => parsed[key] ?? [])
-  .reduce((total, entry) => total + (entry.patterns?.length ?? 0), 0);
+// Every top-level array counts, types and functions included, which is how the
+// figures quoted in the docs (1,235 entries / 2,703 patterns for 2.17.1) are
+// measured.
+const lists = Object.values(parsed).filter(Array.isArray);
+const entries = lists.reduce((total, list) => total + list.length, 0);
+const patterns = lists
+  .flat()
+  .reduce((total, entry) => total + (entry?.patterns?.length ?? 0), 0);
 
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, text);

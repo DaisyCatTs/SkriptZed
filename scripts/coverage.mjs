@@ -12,13 +12,16 @@
 // colour beyond the structural minimum.
 //
 //   node scripts/coverage.mjs [file.sk ...]
+//
+// SKRIPT_LSP_BINARY measures a binary other than the local build.
 
-import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+import { startLsp } from './lib/lsp-client.mjs';
+import { grammarDir, repoRoot as root, resolveSkriptLsp, treeSitterBinary } from './lib/paths.mjs';
 // Resolved up front: the tree-sitter query runs from the grammar directory, so a
 // path relative to the caller's cwd would not survive the trip.
 const files = process.argv.slice(2).length
@@ -27,16 +30,11 @@ const files = process.argv.slice(2).length
 
 // ---------------------------------------------------------- tree-sitter side
 
-const treeSitter = join(
-  root, 'tree-sitter-skript', 'node_modules', 'tree-sitter-cli',
-  process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter',
-);
-
 function highlightCoverage(file) {
   const out = execFileSync(
-    treeSitter,
+    treeSitterBinary,
     ['query', join(root, 'extension/languages/skript/highlights.scm'), file],
-    { cwd: join(root, 'tree-sitter-skript'), encoding: 'utf8', maxBuffer: 1 << 26 },
+    { cwd: grammarDir, encoding: 'utf8', maxBuffer: 1 << 26 },
   );
   const source = readFileSync(file, 'utf8');
   const lines = source.split('\n');
@@ -78,53 +76,23 @@ function coveredVisible(source, cells) {
 
 // ------------------------------------------------------------- semantic side
 
-const exe = process.platform === 'win32' ? 'skript-lsp.exe' : 'skript-lsp';
-const binary = [
-  join(root, 'language-server', 'target', 'release', exe),
-  join(root, 'language-server', 'target', 'debug', exe),
-].find(existsSync);
+const { binary, error: binaryError } = resolveSkriptLsp();
+// Set but wrong is an error, not a quiet "skipped": the number would otherwise
+// describe a different binary than the one asked for.
+if (!binary && process.env.SKRIPT_LSP_BINARY) {
+  console.error(binaryError);
+  process.exit(2);
+}
 
 async function semanticCoverage(file) {
   if (!binary) return null;
 
-  const server = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-  server.stdin.on('error', () => {});
-  let logs = [];
-  server.stderr.on('data', () => {});
-
-  let nextId = 1;
-  const pending = new Map();
+  const client = startLsp(binary);
   const send = (method, params, isRequest = true) => {
-    const message = isRequest
-      ? { jsonrpc: '2.0', id: nextId++, method, params }
-      : { jsonrpc: '2.0', method, params };
-    const body = Buffer.from(JSON.stringify(message), 'utf8');
-    server.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    server.stdin.write(body);
-    return isRequest ? new Promise(r => pending.set(message.id, r)) : Promise.resolve();
+    if (isRequest) return client.request(method, params);
+    client.notify(method, params);
+    return Promise.resolve();
   };
-
-  let buffer = Buffer.alloc(0);
-  server.stdout.on('data', chunk => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const headerEnd = buffer.indexOf('\r\n\r\n');
-      if (headerEnd < 0) return;
-      const m = /content-length:\s*(\d+)/i.exec(buffer.subarray(0, headerEnd).toString('ascii'));
-      if (!m) return;
-      const start = headerEnd + 4;
-      const len = Number(m[1]);
-      if (buffer.length < start + len) return;
-      const msg = JSON.parse(buffer.subarray(start, start + len).toString('utf8'));
-      buffer = buffer.subarray(start + len);
-      if (msg.id !== undefined && pending.has(msg.id)) {
-        pending.get(msg.id)(msg);
-        pending.delete(msg.id);
-      } else if (msg.method === 'window/logMessage') {
-        logs.push(msg.params?.message ?? '');
-      }
-    }
-  });
 
   const uri = pathToFileURL(file).href;
   const text = readFileSync(file, 'utf8');
@@ -181,14 +149,17 @@ async function semanticCoverage(file) {
     if (!classified.has(index)) unclassified.push(`${index + 1}: ${trimmed.slice(0, 66)}`);
   });
 
-  await send('shutdown', {});
-  await send('exit', {}, false);
-  server.kill();
+  const logs = client.notifications
+    .filter(message => message.method === 'window/logMessage')
+    .map(message => message.params?.message ?? '');
+  await client.stop();
 
   return { classified: executable - unclassified.length, executable, unclassified, logs, elapsedMs, cells };
 }
 
 // -------------------------------------------------------------------- report
+
+if (binary) console.log(`binary: ${binary}`);
 
 for (const file of files) {
   console.log(`\n${file.replace(root, '.')}`);

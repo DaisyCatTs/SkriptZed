@@ -6,7 +6,7 @@
 // So a directory of stub JARs carrying only that manifest is indistinguishable
 // from the real thing as far as syntax loading is concerned, and it is the only
 // way to see `examples/sample-project/addons.sk` light up if you do not happen
-// to run a server with seven addons installed.
+// to run a server with all of these addons installed.
 //
 // It is *not* a substitute for testing against a real server: it proves the
 // syntax loads and hovers, not that any of these plugins would actually run.
@@ -16,16 +16,14 @@
 // then point the language server at the directory it prints.
 
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { writeJar } from './lib/make-jar.mjs';
-
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+import { repoRoot as root } from './lib/paths.mjs';
 const server = join(root, 'examples', 'sample-project', 'test-server');
 const plugins = join(server, 'plugins');
 
-// Every addon `addons.sk` demonstrates, at a version whose syntax the catalog
+// Every addon the sample scripts demonstrate, at a version whose syntax the catalog
 // publishes. The name must match SkriptHub's spelling — that string is what the
 // server matches against, and a typo simply means the addon is "not installed".
 const ADDONS = [
@@ -36,6 +34,11 @@ const ADDONS = [
   { name: 'skRayFall', version: '1.9.28' },
   { name: 'MundoSK', version: '1.9.19' },
   { name: 'Lusk', version: '1.3.2', paper: true },
+  // `classysk.sk` and `equipment.sk`.
+  { name: 'ClassySK', version: '1.3.2' },
+  // The `struct` template in `features.sk`. 1.0-beta2 is the newest release;
+  // SkriptHub files its syntax under "1.0", but addon versions do not gate it.
+  { name: 'oopsk', version: '1.0-beta2' },
 ];
 
 // Not an addon. Included because "found a JAR" and "found an addon" are
@@ -45,7 +48,7 @@ const PLAIN = { name: 'LuckPerms', version: '5.5.50', addon: false };
 
 // Skript itself. Without it the server cannot tell which version the project
 // targets, and every `since` check falls back to assuming syntax is available.
-const SKRIPT = { name: 'Skript', version: '2.16.1', addon: false };
+const SKRIPT = { name: 'Skript', version: '2.17.1', addon: false };
 
 rmSync(server, { recursive: true, force: true });
 mkdirSync(plugins, { recursive: true });

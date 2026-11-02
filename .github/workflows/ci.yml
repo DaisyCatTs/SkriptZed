@@ -20,11 +20,11 @@ jobs:
     name: Grammar
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: tree-sitter-skript/package-lock.json
 
@@ -53,7 +53,8 @@ jobs:
           cd vendor/skript-corpus
           git sparse-checkout set src/test/skript src/main/resources/scripts
 
-      # ~540 real scripts, maintained by the people who define the language.
+      # Every script in SkriptLang's own repository, maintained by the people
+      # who define the language.
       - name: Parse every upstream script
         run: node scripts/parse-corpus.mjs --strict --all
 
@@ -70,7 +71,7 @@ jobs:
     name: Language server
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -78,12 +79,9 @@ jobs:
         with:
           workspaces: language-server
 
-      # Places docs.json so the pattern engine is tested against all 2,117 real
-      # patterns rather than only the hand-written ones. It is GPL-3.0 and is
-      # never committed, so the tests skip when this step is unavailable.
-      # Both databases are third-party data and are never committed. Without
-      # them the tests that exercise all 2,660 core and 12,877 addon patterns
-      # skip rather than fail.
+      # Both databases are third-party data (docs.json is GPL-3.0) and are never
+      # committed. Without them the tests that run every real core and addon
+      # pattern skip rather than fail.
       - name: Fetch the syntax databases
         run: |
           node scripts/fetch-docs.mjs
@@ -108,6 +106,13 @@ jobs:
       - run: cargo test --all
         working-directory: language-server
 
+      # The project is MIT and sold alongside proprietary products, so a
+      # copyleft dependency must fail here rather than be found later.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: language-server/Cargo.toml
+          command: check licenses
+
       # Exercises the assembled server against a real project on disk, which is
       # the only way project-wide indexing and formatting get covered.
       - name: End-to-end LSP session
@@ -119,7 +124,7 @@ jobs:
     name: Zed extension
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip2
@@ -130,6 +135,16 @@ jobs:
       # Zed builds extensions for wasm32-wasip2; a host-only build proves nothing.
       - run: cargo build --release --target wasm32-wasip2
         working-directory: extension
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: extension/Cargo.toml
+          command: check licenses
+
+      # dev-setup.mjs points the grammar at a local checkout; shipped, that
+      # breaks highlighting for every user. See the script for details.
+      - name: Check the grammar source is publishable
+        run: node scripts/check-grammar-source.mjs
 
       # Zed auto-discovers every languages/* directory and then fails to load
       # the extension if one has no config.toml. An empty directory left behind
@@ -155,10 +170,32 @@ jobs:
             fi
           done
 
+  # A draft first, published only once every platform has uploaded. Publishing
+  # on the first upload made "latest" a release with some assets missing for a
+  # few minutes, and anyone installing in that window could not get a server.
+  draft-release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [grammar, language-server, extension]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create the draft
+        # The tag goes through the environment, never into the script text: a
+        # ref name interpolated into `run:` is a shell-injection vector.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --draft --verify-tag --generate-notes
+
   release:
     name: Release binaries
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [grammar, language-server, extension]
+    needs: [draft-release]
     # Without this the upload 403s. GITHUB_TOKEN has been read-only by default
     # for new repositories since 2023, so the failure lands *after* three gate
     # jobs and five cross-builds have already passed — and the only symptom a
@@ -173,6 +210,15 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+          # Static builds with no glibc requirement. The gnu builds need glibc
+          # 2.34 and fail on Debian 11, Ubuntu 20.04 and RHEL 8, which are
+          # common Minecraft hosts and exactly where the server runs when Zed
+          # edits over SSH. The gnu assets stay for extension versions that
+          # ask for them by name.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
           - target: aarch64-apple-darwin
@@ -181,7 +227,7 @@ jobs:
             os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -192,8 +238,19 @@ jobs:
           sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
-      - run: cargo build --release -p skript-lsp --target ${{ matrix.target }}
+      - name: Install cargo-zigbuild
+        if: endsWith(matrix.target, '-musl')
+        run: pip install cargo-zigbuild
+
+      - name: Build
         working-directory: language-server
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == *-musl ]]; then
+            cargo zigbuild --release -p skript-lsp --target ${{ matrix.target }}
+          else
+            cargo build --release -p skript-lsp --target ${{ matrix.target }}
+          fi
 
       # The server falls back to fetching these over the network when they are
       # not on disk, which is fine for a user and useless in CI: the smoke test
@@ -201,7 +258,7 @@ jobs:
       # first run of this step failed on Linux and macOS while passing on
       # Windows. Fetch them first, exactly as the gate jobs do.
       - name: Fetch the syntax databases
-        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-apple-darwin'
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'x86_64-apple-darwin'
         run: |
           node scripts/fetch-docs.mjs
           node scripts/fetch-addons.mjs
@@ -211,7 +268,7 @@ jobs:
       # and the only artefact any user ever runs. Skipped for the two targets
       # this runner cannot execute.
       - name: Smoke-test the binary being released
-        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'x86_64-apple-darwin'
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && matrix.target != 'aarch64-unknown-linux-musl' && matrix.target != 'x86_64-apple-darwin'
         shell: bash
         env:
           SKRIPT_LSP_BINARY: language-server/target/${{ matrix.target }}/release/skript-lsp
@@ -248,8 +305,25 @@ jobs:
           fi
           echo "$asset $(stat -c%s "$asset" 2>/dev/null || stat -f%z "$asset") bytes"
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            skript-lsp-*.tar.gz
-            skript-lsp-*.zip
+      - name: Upload to the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: gh release upload "$TAG" "skript-lsp-$TARGET".* --clobber
+
+  publish-release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish once every asset is in
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false --latest

@@ -5,8 +5,12 @@
 //   git remote add origin <repository>
 //   git fetch --depth 1 origin <rev>
 // so the grammar must be a git repository with a real commit, even when
-// `repository` is a local file:// URL. This script makes that commit and
-// rewrites `rev` to match.
+// `repository` is a local file:// URL. This script regenerates the parser and
+// runs both grammar gates, commits `tree-sitter-skript/` on the current branch,
+// and points `repository`/`rev` in extension.toml at that commit. When Zed's
+// own wasi-sdk is installed, it also compiles the grammar into
+// `extension/grammars/skript.wasm`, so an installed dev extension picks up the
+// change on the next restart instead of needing Rebuild.
 //
 //   node scripts/dev-setup.mjs
 //
@@ -17,24 +21,14 @@
 // macOS and Linux — Node is already required for the tree-sitter CLI.
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { fileURLToPath } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const grammarDir = join(root, 'tree-sitter-skript');
+import { grammarDir, repoRoot as root, treeSitterBinary as treeSitter } from './lib/paths.mjs';
+
 const manifest = join(root, 'extension', 'extension.toml');
-
-// The real binary, not the `.bin` shim: the shim is a POSIX shell script on
-// Unix and a `.cmd` on Windows, which Node refuses to spawn since
-// CVE-2024-27980.
-const treeSitter = join(
-  grammarDir,
-  'node_modules',
-  'tree-sitter-cli',
-  process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter',
-);
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -98,7 +92,6 @@ try {
 }
 
 if (hasChanges) {
-  // No Co-Authored-By trailer, by request.
   run('git', ['commit', '-q', '-m', 'chore(grammar): dev snapshot for the Zed extension'], {
     cwd: root,
     quiet: true,
@@ -119,16 +112,32 @@ const rev = run('git', ['rev-parse', 'HEAD'], { cwd: root, quiet: true }).trim()
 const url = pathToFileURL(root).href;
 
 // A stale checkout of a *different* URL makes Zed refuse with "grammar
-// directory already exists, but is not a git clone of ...".
-const staleGrammar = join(root, 'extension', 'grammars');
-if (existsSync(staleGrammar)) {
-  rmSync(staleGrammar, { recursive: true, force: true });
-  console.log('==> cleared the previous grammar checkout');
+// directory already exists, but is not a git clone of ...". Only that case is
+// cleared: a checkout of this repository is reused, and deleting it — or the
+// compiled grammar beside it — left an installed dev extension unable to load
+// the language until it was rebuilt by hand.
+const grammarsDir = join(root, 'extension', 'grammars');
+const checkout = join(grammarsDir, 'skript');
+if (existsSync(checkout)) {
+  let origin = '';
+  try {
+    origin = run('git', ['remote', 'get-url', 'origin'], { cwd: checkout, quiet: true }).trim();
+  } catch {
+    // Not a git checkout at all — just as stale.
+  }
+  if (origin !== url) {
+    rmSync(checkout, { recursive: true, force: true });
+    console.log('==> cleared a grammar checkout of a different repository');
+  }
 }
 
 console.log(`==> pointing extension.toml at ${rev.slice(0, 12)}`);
 let text = readFileSync(manifest, 'utf8');
-text = text.replace(/^repository = "file:\/\/.*"$/m, `repository = "${url}"`);
+// The grammar's `repository`, i.e. the one directly above `rev` — not the
+// extension's own at the top of the file. Matching only an existing `file://`
+// value meant a clean checkout kept the GitHub URL, and Zed then tried to fetch
+// a commit that exists only on this machine.
+text = text.replace(/^repository = ".*"(\r?\nrev = )/m, `repository = "${url}"$1`);
 text = text.replace(/^rev = ".*"$/m, `rev = "${rev}"`);
 if (!/^path = /m.test(text)) {
   text = text.replace(/^rev = ".*"$/m, match => `${match}
@@ -136,10 +145,76 @@ path = "tree-sitter-skript"`);
 }
 writeFileSync(manifest, text);
 
+// An installed dev extension runs on `extension/grammars/skript.wasm`, and Zed
+// does not rebuild a dev extension by itself, so a new `rev` alone changes
+// nothing until someone clicks Rebuild (and a missing wasm fails the next
+// start with "failed to load language Skript"). When Zed's own wasi-sdk is
+// present, do what its extension builder does — check out the grammar at
+// `rev` and compile it with the same clang and flags — so the installed
+// extension picks up the new grammar on restart.
+const zedData =
+  process.platform === 'win32'
+    ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'Zed')
+    : process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support', 'Zed')
+      : join(process.env.XDG_DATA_HOME ?? join(homedir(), '.local', 'share'), 'zed');
+const clang = join(
+  zedData,
+  'extensions',
+  'build',
+  'wasi-sdk',
+  'bin',
+  process.platform === 'win32' ? 'clang.exe' : 'clang',
+);
+
+let rebuilt = false;
+if (existsSync(clang)) {
+  console.log('==> compiling the grammar with Zed\'s wasi-sdk');
+  if (!existsSync(checkout)) {
+    mkdirSync(grammarsDir, { recursive: true });
+    run('git', ['init', '-q', checkout]);
+    run('git', ['remote', 'add', 'origin', url], { cwd: checkout });
+  }
+  run('git', ['fetch', '-q', '--depth', '1', 'origin', rev], { cwd: checkout });
+  run('git', ['checkout', '-q', '--force', 'FETCH_HEAD'], { cwd: checkout });
+  const src = join(checkout, 'tree-sitter-skript', 'src');
+  const wasm = join(grammarsDir, 'skript.wasm');
+  const fresh = `${wasm}.new`;
+  try {
+    run(clang, [
+      '-fPIC',
+      '-shared',
+      '-Os',
+      '-Wl,--export=tree_sitter_skript',
+      '-o',
+      fresh,
+      '-I',
+      src,
+      join(src, 'parser.c'),
+      join(src, 'scanner.c'),
+    ]);
+    // Swapped in only once it exists, so a failed compile never leaves the
+    // installed extension without a grammar.
+    try {
+      renameSync(fresh, wasm);
+      rebuilt = true;
+    } catch {
+      console.log('    Zed has the old grammar open — close Zed and run this again');
+    }
+  } catch {
+    console.log('    compile failed — use Rebuild in Zed instead (below)');
+  }
+}
+
 console.log(`
 Done.
 
-In Zed:  command palette -> "zed: install dev extension" -> pick
+First time:  command palette -> "zed: install dev extension" -> pick
   ${join(root, 'extension')}
+${
+  rebuilt
+    ? 'Already installed: the grammar is rebuilt, so just restart Zed.'
+    : 'Already installed: open "zed: extensions", find Skript and click Rebuild,\nor Zed fails to load the language on its next start.'
+}
 
 Run Zed with "zed --foreground" to see the extension's stdout.`);

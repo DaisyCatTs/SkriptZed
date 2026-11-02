@@ -2,7 +2,7 @@
 // Parses every vendored SkriptLang `.sk` file and reports ERROR / MISSING nodes.
 //
 // This is the grammar's primary quality gate: the upstream Skript repository
-// ships ~540 real scripts covering every structure, section and edge case the
+// ships 587 real scripts (as of Skript 2.17.1) covering every structure, section and edge case the
 // language has, and they are maintained by the people who define the language.
 //
 //   node scripts/parse-corpus.mjs            # summary + first failures
@@ -12,19 +12,11 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative } from 'node:path';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const grammarDir = join(root, 'tree-sitter-skript');
+import { grammarDir, repoRoot as root, treeSitterBinary as cli } from './lib/paths.mjs';
+
 const corpusDir = join(root, 'vendor', 'skript-corpus');
-// Invoke the real binary that tree-sitter-cli installs, not the `.bin` shim:
-// the shim is a POSIX shell script on Unix and a `.cmd` on Windows, and Node
-// refuses to spawn `.cmd` files without a shell since CVE-2024-27980.
-const cli = join(
-  grammarDir, 'node_modules', 'tree-sitter-cli',
-  process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter',
-);
 
 const showAll = process.argv.includes('--all');
 const strict = process.argv.includes('--strict');
@@ -54,7 +46,7 @@ try {
   process.exit(2);
 }
 
-// The file list is passed via `--paths`: a command line with ~540 absolute
+// The file list is passed via `--paths`: a command line with hundreds of absolute
 // paths silently overflows on Windows, which made an earlier version of this
 // script report a clean run without ever invoking the parser.
 const listFile = join(tmpdir(), 'tree-sitter-skript-corpus.txt');

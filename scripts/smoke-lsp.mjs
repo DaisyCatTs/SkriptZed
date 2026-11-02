@@ -8,37 +8,21 @@
 //   cd language-server && cargo build -p skript-lsp
 //   node scripts/smoke-lsp.mjs
 
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { writeJar } from './lib/make-jar.mjs';
+import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const exe = process.platform === 'win32' ? 'skript-lsp.exe' : 'skript-lsp';
-// SKRIPT_LSP_BINARY points this at a binary that is not a local build — the
-// downloaded release asset, most usefully. A local `cargo build` passing proves
-// nothing about the artifact a user actually receives, and v0.1.0 shipped
-// several times before that gap was noticed.
-// Set but wrong must fail, not fall back. A typo — or a release download that
-// silently produced nothing — would otherwise pass against a local build while
-// appearing to have tested the published artifact, which is the exact failure
-// this variable exists to prevent.
-const override = process.env.SKRIPT_LSP_BINARY;
-if (override && !existsSync(override)) {
-  console.error(`SKRIPT_LSP_BINARY is set to a path that does not exist:\n  ${override}`);
-  process.exit(2);
-}
+import { startLsp } from './lib/lsp-client.mjs';
+import { writeJar } from './lib/make-jar.mjs';
+import { repoRoot as root, resolveSkriptLsp } from './lib/paths.mjs';
 
-const binary = [
-  override,
-  join(root, 'language-server', 'target', 'release', exe),
-  join(root, 'language-server', 'target', 'debug', exe),
-].find(candidate => candidate && existsSync(candidate));
-
+// SKRIPT_LSP_BINARY points this at a binary that is not a local build, such as
+// the downloaded release asset; see resolveSkriptLsp for why a wrong value
+// fails instead of falling back.
+const { binary, error } = resolveSkriptLsp();
 if (!binary) {
-  console.error('skript-lsp not built — run: cd language-server && cargo build -p skript-lsp');
+  console.error(error);
   process.exit(2);
 }
 
@@ -106,7 +90,7 @@ writeJar(join(project, 'plugins', 'LuckPerms-Bukkit-5.5.50.jar'), {
 
 // Addon syntax as a local file rather than a live fetch, so the smoke test
 // needs no network. The SkriptHub path itself is covered by the Rust
-// integration tests against the real 8,210-record catalog.
+// integration tests against the real 8,712-record catalog.
 const customSyntax = join(project, 'skbee-syntax.json');
 writeFileSync(
   customSyntax,
@@ -138,51 +122,16 @@ const projectUri = pathToFileURL(project).href;
 
 // ------------------------------------------------------------------ client
 
-const server = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
-server.stderr.on('data', chunk => process.stderr.write(`[server] ${chunk}`));
-// `exit` makes the server close its stdin, so a write racing the shutdown gets
-// EPIPE. That is the protocol working, not a failure.
-server.stdin.on('error', () => {});
-
-let nextId = 1;
-const pending = new Map();
-const notifications = [];
+const client = startLsp(binary, {
+  onStderr: chunk => process.stderr.write(`[server] ${chunk}`),
+});
+const { notifications } = client;
 
 function send(method, params, isRequest = true) {
-  const message = isRequest
-    ? { jsonrpc: '2.0', id: nextId++, method, params }
-    : { jsonrpc: '2.0', method, params };
-  const body = Buffer.from(JSON.stringify(message), 'utf8');
-  server.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-  server.stdin.write(body);
-  if (!isRequest) return Promise.resolve();
-  return new Promise(resolve => pending.set(message.id, resolve));
+  if (isRequest) return client.request(method, params);
+  client.notify(method, params);
+  return Promise.resolve();
 }
-
-// Byte-exact framing — a character-based reader breaks on non-ASCII payloads.
-let buffer = Buffer.alloc(0);
-server.stdout.on('data', chunk => {
-  buffer = Buffer.concat([buffer, chunk]);
-  for (;;) {
-    const headerEnd = buffer.indexOf('\r\n\r\n');
-    if (headerEnd < 0) return;
-    const match = /content-length:\s*(\d+)/i.exec(buffer.subarray(0, headerEnd).toString('ascii'));
-    if (!match) return;
-    const start = headerEnd + 4;
-    const length = Number(match[1]);
-    if (buffer.length < start + length) return;
-
-    const message = JSON.parse(buffer.subarray(start, start + length).toString('utf8'));
-    buffer = buffer.subarray(start + length);
-
-    if (message.id !== undefined && pending.has(message.id)) {
-      pending.get(message.id)(message);
-      pending.delete(message.id);
-    } else if (message.method) {
-      notifications.push(message);
-    }
-  }
-});
 
 const failures = [];
 function check(name, condition, detail = '') {
@@ -437,13 +386,51 @@ try {
     JSON.stringify(skbeeItem?.sortText),
   );
 
-  await send('shutdown', {});
-  await send('exit', {}, false);
+  // ---- feature switches ----------------------------------------------------
+  // A switch applies live: no restart, and the request is simply answered
+  // with nothing.
+  const publishedBefore = notifications.filter(
+    n => n.method === 'textDocument/publishDiagnostics',
+  ).length;
+  send(
+    'workspace/didChangeConfiguration',
+    { settings: { features: { hover: false, diagnostics: false } } },
+    false,
+  );
+  const deadline = Date.now() + 5000;
+  let republished;
+  while (!republished && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    republished = notifications
+      .filter(n => n.method === 'textDocument/publishDiagnostics')
+      .slice(publishedBefore)
+      .findLast(n => n.params?.uri === uri);
+  }
+  check(
+    'switching diagnostics off clears them',
+    republished && republished.params.diagnostics.length === 0,
+    JSON.stringify(republished?.params?.diagnostics?.map(d => d.code)),
+  );
+  const silentHover = await send('textDocument/hover', {
+    textDocument: { uri },
+    position: { line: 3, character: 10 },
+  });
+  check('switching hover off answers hover with nothing', silentHover.result === null);
+  const stillCompletes = await send('textDocument/completion', {
+    textDocument: { uri },
+    position: { line: 11, character: 2 },
+  });
+  check(
+    'other features keep working',
+    (stillCompletes.result?.items ?? stillCompletes.result ?? []).length > 0,
+  );
+
+  await client.stop();
 } catch (error) {
   console.error('smoke test threw:', error);
   failures.push('unexpected exception');
 } finally {
-  server.kill();
+  client.process.kill();
   rmSync(project, { recursive: true, force: true });
 }
 

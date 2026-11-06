@@ -1,5 +1,6 @@
 //! `textDocument/completion` and `completionItem/resolve`.
 
+mod arguments;
 mod events;
 mod ranking;
 mod sections;
@@ -195,8 +196,34 @@ fn complete(state: &State, params: &CompletionParams) -> Option<CompletionRespon
         at.position,
     );
     let mut items = declared_items(&state.workspace, uri, typed);
+    let mut arguments_offered = false;
     if let Some(catalog) = &state.catalog {
-        items.extend(catalog_items(catalog, prefix, typed, replace));
+        let arguments = arguments::argument_items(&arguments::Request {
+            catalog,
+            document,
+            cursor: position,
+            prefix,
+            explicit: params.context.is_some(),
+            locals: state.settings.features.variable_completion,
+            encoding: state.encoding,
+        });
+        arguments_offered = !arguments.is_empty();
+        let phrases = catalog_items(catalog, prefix, typed, replace);
+        // `send m` is both the Message effect's `message` keyword and an
+        // argument starting with `m`. When syntax still covers the phrase the
+        // user is more likely spelling its keywords out, so the arguments go
+        // below it: ranked first, `send m` offered "Chat Format" over Message.
+        let covered = typed.split_whitespace().nth(1).is_some()
+            && phrases.iter().any(|(score, _)| *score > 0);
+        items.extend(arguments.into_iter().map(|(score, mut item)| {
+            if !covered {
+                return (score, item);
+            }
+            let score = below_phrases(score);
+            item.sort_text = Some(sort_key(score, &item.label));
+            (score, item)
+        }));
+        items.extend(phrases);
         items.extend(events::event_value_items(
             catalog,
             document,
@@ -229,10 +256,23 @@ fn complete(state: &State, params: &CompletionParams) -> Option<CompletionRespon
     let truncated = items.len() > limit;
     items.truncate(limit);
 
+    // Argument lists are always marked partial. Otherwise Zed keeps filtering
+    // the list it has as the word grows, and never sees the empty answer that
+    // the finished word (`kill player`) gets, so the popup stayed up for Enter.
     Some(CompletionResponse::List(CompletionList {
-        is_incomplete: truncated,
+        is_incomplete: truncated || arguments_offered,
         items,
     }))
+}
+
+/// Maps a score onto the band below every phrase item, keeping its order.
+///
+/// A phrase item that matched at all past the first word scores at least
+/// `DECLARED_BONUS + 1` less three rank penalties, so the band stops short of
+/// that, and never reaches zero, which would drop the item outright.
+fn below_phrases(score: i32) -> i32 {
+    let floor = DECLARED_BONUS - 3 * RANK_PENALTY;
+    (score.clamp(0, ranking::TOP_SCORE) * floor / (ranking::TOP_SCORE + 1)).max(1)
 }
 
 /// Best score first, then by label, scores dropped.
@@ -681,22 +721,7 @@ fn bare_local_items(
     if word.is_empty() || !standalone {
         return Vec::new();
     }
-    let scope = local_scope(document, position.line);
-    let (first, last) = scope.as_ref().map_or((0, u32::MAX), |(range, _)| {
-        (range.start.line, range.end.line)
-    });
-    let mut names: Vec<String> = variables::occurrences(document.text())
-        .into_iter()
-        .filter(|occurrence| (first..=last).contains(&occurrence.line))
-        .filter(|occurrence| occurrence.line != position.line)
-        .map(|occurrence| occurrence.name)
-        .filter(|name| !name.contains("::") && !name.contains('%'))
-        .collect();
-    if let Some((_, parameters)) = scope {
-        names.extend(parameters.into_iter().map(|name| format!("_{name}")));
-    }
-    names.sort_by_key(|name| name.to_lowercase());
-    names.dedup_by_key(|name| name.to_lowercase());
+    let names = trigger_locals(document, position.line);
 
     let replace = to_lsp_range(
         document.text(),
@@ -735,6 +760,29 @@ fn bare_local_items(
             (score, item)
         })
         .collect()
+}
+
+/// The plain locals (`_visitor`, no list or interpolated names) the trigger
+/// around `line` uses on other lines, plus its parameters, sorted and
+/// deduplicated ignoring case.
+fn trigger_locals(document: &Document, line: u32) -> Vec<String> {
+    let scope = local_scope(document, line);
+    let (first, last) = scope.as_ref().map_or((0, u32::MAX), |(range, _)| {
+        (range.start.line, range.end.line)
+    });
+    let mut names: Vec<String> = variables::occurrences(document.text())
+        .into_iter()
+        .filter(|occurrence| (first..=last).contains(&occurrence.line))
+        .filter(|occurrence| occurrence.line != line)
+        .map(|occurrence| occurrence.name)
+        .filter(|name| !name.contains("::") && !name.contains('%'))
+        .collect();
+    if let Some((_, parameters)) = scope {
+        names.extend(parameters.into_iter().map(|name| format!("_{name}")));
+    }
+    names.sort_by_key(|name| name.to_lowercase());
+    names.dedup_by_key(|name| name.to_lowercase());
+    names
 }
 
 pub fn local_scope(document: &Document, line: u32) -> Option<(skript_index::Range, Vec<String>)> {

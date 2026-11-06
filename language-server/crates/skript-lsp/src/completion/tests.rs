@@ -327,6 +327,286 @@ fn variable_completions_survive_the_editors_filter() {
         .any(|label| label == "color"));
 }
 
+const ARGUMENT_DOCS: &str = r#"{
+  "effects": [
+    { "id": "EffKill", "name": "Kill", "patterns": ["kill %entities%"] },
+    { "id": "EffTeleport", "name": "Teleport",
+      "patterns": ["teleport %entities% (to|%direction%) %location%"] },
+    { "id": "EffMessage", "name": "Message",
+      "patterns": ["(message|send [message[s]]) %objects% [to %commandsenders%]"] },
+    { "id": "EffGameMode", "name": "Game Mode",
+      "patterns": ["set game[ ]mode of %players% to %gamemode%"] }
+  ],
+  "conditions": [
+    { "id": "CondIsOp", "name": "Is Operator", "patterns": ["%offline players% (is|are) [an] op[erator][s]"] }
+  ],
+  "events": [
+    { "id": "EvtJoin", "name": "Join", "patterns": ["[player] (login|logging in|join[ing])"],
+      "eventValues": [{ "id": "player", "name": "player" }, { "id": "world", "name": "world" }] }
+  ],
+  "expressions": [
+    { "id": "ExprOnline", "name": "Online Players", "patterns": ["[all [of the]] players"],
+      "returns": { "id": "player", "name": "Player" } },
+    { "id": "ExprAttacker", "name": "Attacker", "patterns": ["[the] (attacker|damager)"],
+      "returns": { "id": "entity", "name": "Entity" } },
+    { "id": "ExprSkull", "name": "Player Skull", "patterns": ["[the] skull of %offline players%"],
+      "returns": { "id": "itemtype", "name": "Item Type" } },
+    { "id": "ExprPlain", "name": "Plain Item", "patterns": ["[a] plain %item type%"],
+      "returns": { "id": "itemtype", "name": "Item Type" } },
+    { "id": "ExprSpawn", "name": "Spawn",
+      "patterns": ["%worlds%'[s] spawn[s]", "[the] spawn[s] [(point|location)[s]] [of %worlds%]"],
+      "returns": { "id": "location", "name": "Location" } },
+    { "id": "ExprSpawnReason", "name": "Spawn Reason", "patterns": ["[the] spawn[ing] reason"],
+      "returns": { "id": "spawnreason", "name": "Spawn Reason" } },
+    { "id": "ExprMaxHealth", "name": "Max Health", "patterns": ["[the] max[imum] health of %living entities%"],
+      "returns": { "id": "number", "name": "Number" } }
+  ],
+  "types": [
+    { "id": "player", "name": "Player" },
+    { "id": "entity", "name": "Entity" },
+    { "id": "location", "name": "Location" },
+    { "id": "offlineplayer", "name": "Offline Player" },
+    { "id": "gamemode", "name": "Game Mode", "patterns": ["adventure, survival, spectator, creative"] }
+  ]
+}"#;
+
+fn argument_state(lines: &[&str]) -> State {
+    let mut source = String::from("on join:\n\tset {_target} to player\n");
+    for line in lines {
+        source.push_str(&format!("\t{line}\n"));
+    }
+    let mut state = State::default();
+    state.workspace.open("file:///t.sk", source);
+    state.catalog = Some(skript_docs::Catalog::build(
+        skript_docs::Docs::parse(ARGUMENT_DOCS).unwrap(),
+    ));
+    state
+}
+
+/// Each item as (label, the text it replaces, what it inserts), for the
+/// statement written on line `2 + index` of [`argument_state`].
+fn edits(
+    state: &State,
+    index: u32,
+    context: Option<tower_lsp::lsp_types::CompletionContext>,
+) -> Vec<(String, String, String)> {
+    let line = 2 + index;
+    let text = state
+        .workspace
+        .get("file:///t.sk")
+        .unwrap()
+        .line(line)
+        .to_string();
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///t.sk".parse().unwrap(),
+            },
+            position: Position::new(line, text.len() as u32),
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context,
+    };
+    let items = match completion(state, &params) {
+        Some(CompletionResponse::List(list)) => list.items,
+        Some(CompletionResponse::Array(items)) => items,
+        None => Vec::new(),
+    };
+    items
+        .into_iter()
+        .map(|item| match item.text_edit {
+            Some(CompletionTextEdit::Edit(edit)) => {
+                let range = edit.range.start.character as usize..edit.range.end.character as usize;
+                (item.label, text[range].to_string(), edit.new_text)
+            }
+            _ => (item.label.clone(), String::new(), item.label),
+        })
+        .collect()
+}
+
+fn invoked() -> Option<tower_lsp::lsp_types::CompletionContext> {
+    Some(tower_lsp::lsp_types::CompletionContext {
+        trigger_kind: tower_lsp::lsp_types::CompletionTriggerKind::INVOKED,
+        trigger_character: None,
+    })
+}
+
+#[test]
+fn an_entity_slot_offers_player_values_and_replaces_only_the_word() {
+    let state = argument_state(&["kill pl"]);
+    let found = edits(&state, 0, None);
+    let labels: Vec<&str> = found.iter().map(|(label, _, _)| label.as_str()).collect();
+    assert!(labels.contains(&"Online Players"), "{labels:?}");
+    assert!(labels.contains(&"player"), "the event value: {labels:?}");
+    // Named after a player, but neither fits an entity slot.
+    assert!(!labels.contains(&"Player Skull"), "{labels:?}");
+    assert!(!labels.contains(&"Plain Item"), "{labels:?}");
+    for (label, replaced, _) in &found {
+        assert_eq!(replaced, "pl", "{label} replaced {replaced:?}");
+    }
+    // The event's own entity leads.
+    assert_eq!(found[0].0, "player");
+}
+
+#[test]
+fn a_location_slot_offers_locations_and_not_entities() {
+    let state = argument_state(&["teleport player to sp"]);
+    let found = edits(&state, 0, None);
+    let spawn = found
+        .iter()
+        .find(|(label, _, _)| label == "Spawn")
+        .unwrap_or_else(|| panic!("no Spawn in {found:?}"));
+    assert_eq!(spawn.1, "sp");
+    // The pattern the user is typing, not the one opening with a slot.
+    assert_eq!(spawn.2, "spawn");
+    assert!(found.iter().all(|(label, _, _)| label != "Spawn Reason"));
+    let state = argument_state(&["teleport player to "]);
+    let all = edits(&state, 0, invoked());
+    assert!(all.iter().any(|(label, _, _)| label == "Spawn"), "{all:?}");
+    assert!(
+        all.iter().all(|(label, _, _)| label != "Attacker"),
+        "an entity is not a location: {all:?}"
+    );
+}
+
+/// The Enter bug again, from the argument side: a finished argument must not
+/// leave a popup that Enter accepts.
+#[test]
+fn a_finished_argument_offers_nothing() {
+    let state = argument_state(&["kill player", "teleport player to spawn", "kill "]);
+    assert!(edits(&state, 0, None).is_empty());
+    assert!(edits(&state, 1, None).is_empty());
+    // Nothing typed and nobody asked: Zed never requests after a space, so a
+    // request like this is not the user browsing. (The whole-phrase items
+    // answer it as before; no argument does.)
+    let unasked = edits(&state, 2, None);
+    assert!(
+        unasked.iter().all(|(_, replaced, _)| replaced == "kill "),
+        "{unasked:?}"
+    );
+}
+
+#[test]
+fn asking_after_a_space_lists_what_fits_with_the_triggers_locals() {
+    let state = argument_state(&["kill "]);
+    let found = edits(&state, 0, invoked());
+    let labels: Vec<&str> = found.iter().map(|(label, _, _)| label.as_str()).collect();
+    for wanted in ["{_target}", "player", "Online Players", "Attacker"] {
+        assert!(labels.contains(&wanted), "{wanted}: {labels:?}");
+    }
+    assert!(!labels.contains(&"world"), "a world is not an entity");
+    // Inserted at the cursor, replacing nothing that was written.
+    let player = found
+        .iter()
+        .find(|(label, _, _)| label == "player")
+        .unwrap();
+    assert_eq!((player.1.as_str(), player.2.as_str()), ("", "player"));
+
+    let mut state = argument_state(&["kill "]);
+    state.settings.features.variable_completion = false;
+    let found = edits(&state, 0, invoked());
+    assert!(found.iter().all(|(label, _, _)| label != "{_target}"));
+}
+
+#[test]
+fn a_listed_type_offers_its_values() {
+    let state = argument_state(&["set game mode of player to su"]);
+    let found = edits(&state, 0, None);
+    assert!(
+        found
+            .iter()
+            .any(|(label, replaced, _)| label == "survival" && replaced == "su"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_condition_slot_after_if_is_offered() {
+    let state = argument_state(&["if pl"]);
+    let found = edits(&state, 0, None);
+    assert!(
+        found.iter().any(|(label, _, _)| label == "player"),
+        "{found:?}"
+    );
+    assert!(found.iter().all(|(_, replaced, _)| replaced == "pl"));
+}
+
+/// `send m` may be Message's own `message` keyword as much as an argument
+/// starting with `m`; syntax that still covers the phrase stays first.
+#[test]
+fn syntax_still_covering_the_phrase_ranks_above_arguments() {
+    let state = argument_state(&["send m"]);
+    let found = edits(&state, 0, None);
+    assert_eq!(
+        found.first().map(|(label, _, _)| label.as_str()),
+        Some("Message")
+    );
+    assert!(
+        found
+            .iter()
+            .any(|(label, replaced, _)| label == "Max Health" && replaced == "m"),
+        "the argument is still offered, below: {found:?}"
+    );
+}
+
+/// Never more than the word under the cursor, wherever the slot is.
+#[test]
+fn no_argument_replaces_more_than_the_current_word() {
+    let lines = [
+        "kill pl",
+        "teleport player to sp",
+        "send \"hi\" to pl",
+        "set game mode of player to cr",
+        "if pl",
+    ];
+    let state = argument_state(&lines);
+    for (index, line) in lines.iter().enumerate() {
+        let word = line.rsplit(' ').next().unwrap();
+        let found = edits(&state, index as u32, None);
+        assert!(!found.is_empty(), "{line:?} offered nothing");
+        for (label, replaced, _) in found {
+            assert_eq!(replaced, word, "{line:?}: {label} replaced {replaced:?}");
+        }
+    }
+}
+
+/// Against Skript's real database, when it has been fetched
+/// (`node scripts/fetch-docs.mjs`); skipped otherwise.
+#[test]
+fn arguments_against_the_real_catalog() {
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../vendor/docs.json");
+    if !path.exists() {
+        eprintln!("skipping: run node scripts/fetch-docs.mjs");
+        return;
+    }
+    let text = std::fs::read_to_string(&path).expect("vendor/docs.json is readable");
+    let docs = skript_docs::Docs::parse(&text)
+        .unwrap_or_else(|error| panic!("vendor/docs.json failed to deserialise: {error}"));
+    let source =
+        "on join:\n\tset {_target} to player\n\tteleport player to sp\n\tkill \n\tkill player\n";
+    let mut state = State::default();
+    state.workspace.open("file:///t.sk", source);
+    state.catalog = Some(skript_docs::Catalog::build(docs));
+
+    let teleport = edits(&state, 0, None);
+    assert!(
+        teleport
+            .iter()
+            .any(|(label, replaced, _)| label == "Spawn" && replaced == "sp"),
+        "{teleport:?}"
+    );
+    let kill = edits(&state, 1, invoked());
+    let labels: Vec<&str> = kill.iter().map(|(label, _, _)| label.as_str()).collect();
+    assert!(labels.contains(&"player"), "{labels:?}");
+    assert!(labels.contains(&"{_target}"), "{labels:?}");
+    assert!(
+        edits(&state, 2, None).is_empty(),
+        "a finished `kill player`"
+    );
+}
+
 /// `to vis` should reach `{_visitor}` without first typing `{_`, and `{v`
 /// should find a local as well as globals.
 #[test]

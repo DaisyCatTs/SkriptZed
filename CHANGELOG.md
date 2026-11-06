@@ -13,6 +13,20 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+### Added
+
+- **Argument completion.** Once a statement's start identifies its syntax,
+  completion offers what fits the slot being typed: `kill pl` offers the
+  event's `player` and other entity expressions, `teleport player to sp`
+  offers Spawn (a location) and no entity-only expressions, a game mode slot
+  offers `survival` and friends. Expressions are matched on their documented
+  return type, with a small table of well-known supertypes (a player is an
+  entity, a command sender and an offline player), and the trigger's locals
+  are offered when you ask with Ctrl-Space after a space. Accepting one
+  replaces only the word under the cursor, never the statement, and a word
+  that already spells out a value (`kill player`) opens no popup, so Enter
+  still starts a new line.
+
 ### Fixed
 
 - **Pressing Enter at the end of a line could replace it.** The completion

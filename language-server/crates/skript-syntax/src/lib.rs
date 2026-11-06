@@ -12,10 +12,16 @@
 mod matcher;
 mod pattern;
 
-pub use matcher::{Match, SlotCapture};
+pub use matcher::{Match, OpenSlot, SlotCapture};
 pub use pattern::{Node, ParseError, Pattern, Slot};
 
 use std::collections::HashMap;
+
+/// The slots `pattern` can have open at the end of `line`: what an argument
+/// typed next would fill. Empty when the line is not a start of the pattern.
+pub fn open_slots(pattern: &Pattern, line: &str) -> Vec<OpenSlot> {
+    matcher::open_slots(pattern, line)
+}
 
 /// An inverted index from literal word to the patterns that require it.
 ///

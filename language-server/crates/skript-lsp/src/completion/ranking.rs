@@ -108,7 +108,7 @@ pub fn relevance_to_keywords(pattern: &str, typed: &str) -> i32 {
 /// One word for a plain pattern, or every alternative when it opens with a
 /// choice. Optionals are skipped: `[the] egg will hatch` starts with `egg` as
 /// far as anyone typing is concerned.
-fn leading_keywords(pattern: &str) -> Vec<String> {
+pub(super) fn leading_keywords(pattern: &str) -> Vec<String> {
     let mut chars = pattern.chars().peekable();
     let mut depth = 0i32;
 

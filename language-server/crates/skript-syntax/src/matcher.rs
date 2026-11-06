@@ -445,6 +445,163 @@ impl State<'_> {
     }
 }
 
+/// A slot that the end of a line can begin.
+///
+/// What argument completion needs: `teleport player to ` is not a match of
+/// `teleport %entities% to %location%`, because the line stops before the
+/// pattern does, but it says exactly which slot is being typed next.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenSlot {
+    pub slot: Slot,
+    /// How many of the line's tokens the pattern spelled out with its own
+    /// words on the way there. A pattern that explains more of the line is
+    /// the likelier one when several leave a slot open.
+    pub literals: usize,
+}
+
+/// Every slot `pattern` can have open at the end of `line`, where the line's
+/// tokens are all consumed and the next node to match is that slot.
+///
+/// Unlike [`match_pattern`] this explores every path rather than stopping at
+/// the first: a choice or an optional can leave different slots open
+/// (`send %objects% [to %audiences%]` after `send x to ` versus `send `).
+pub(crate) fn open_slots(pattern: &Pattern, line: &str) -> Vec<OpenSlot> {
+    let tokens = tokenize(line);
+    let mut walk = PrefixWalk {
+        tokens: &tokens,
+        steps: 0,
+        found: Vec::new(),
+    };
+    walk.walk(&pattern.nodes, None, 0, 0);
+    let mut found = walk.found;
+    found.dedup();
+    found
+}
+
+struct PrefixWalk<'a> {
+    tokens: &'a [Token],
+    steps: u32,
+    found: Vec<OpenSlot>,
+}
+
+impl PrefixWalk<'_> {
+    fn walk<'p>(
+        &mut self,
+        nodes: &'p [Node],
+        cont: Option<&Cont<'p, '_>>,
+        pos: usize,
+        literals: usize,
+    ) {
+        self.steps += 1;
+        if self.steps > STEP_BUDGET {
+            return;
+        }
+        let Some((node, rest)) = nodes.split_first() else {
+            // A pattern that ends before the line does leaves nothing open.
+            if let Some(tail) = cont {
+                self.walk(tail.nodes, tail.next, pos, literals);
+            }
+            return;
+        };
+        let end = self.tokens.len();
+        match node {
+            Node::Literal(text) => {
+                let mut cursor = pos;
+                for word in sub_words(text) {
+                    if self.tokens.get(cursor).map(|t| t.text.as_str()) != Some(word) {
+                        return;
+                    }
+                    cursor += 1;
+                }
+                self.walk(rest, cont, cursor, literals + (cursor - pos));
+            }
+            Node::Optional(inner) => {
+                let tail = Cont {
+                    nodes: rest,
+                    next: cont,
+                };
+                self.walk(inner, Some(&tail), pos, literals);
+                self.walk(rest, cont, pos, literals);
+            }
+            Node::Choice(branches) => {
+                let tail = Cont {
+                    nodes: rest,
+                    next: cont,
+                };
+                for branch in branches {
+                    self.walk(branch, Some(&tail), pos, literals);
+                }
+            }
+            Node::Slot(slot) if pos == end => self.found.push(OpenSlot {
+                slot: slot.clone(),
+                literals,
+            }),
+            // A slot or regex hole before the end takes one token or more,
+            // but never runs past the end: the slot being typed starts there.
+            Node::Slot(_) | Node::Regex(_) => {
+                for next in pos + 1..=end {
+                    self.steps += 1;
+                    if self.steps > STEP_BUDGET {
+                        return;
+                    }
+                    self.walk(rest, cont, next, literals);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod open_slot_tests {
+    use super::*;
+    use crate::pattern::Pattern;
+
+    fn open(pattern: &str, line: &str) -> Vec<Vec<String>> {
+        open_slots(&Pattern::parse(pattern).unwrap(), line)
+            .into_iter()
+            .map(|open| open.slot.types)
+            .collect()
+    }
+
+    #[test]
+    fn the_slot_after_the_typed_words_is_open() {
+        assert_eq!(open("kill %entities%", "kill "), vec![vec!["entities"]]);
+        assert_eq!(
+            open("teleport %entities% to %location%", "teleport player to "),
+            vec![vec!["location"]]
+        );
+        // The first slot takes `player`; it never stays open past it.
+        assert_eq!(
+            open("teleport %entities% to %location%", "teleport player "),
+            Vec::<Vec<String>>::new()
+        );
+    }
+
+    #[test]
+    fn an_optional_tail_can_open_its_slot() {
+        let message = "(message|send [message[s]]) %objects% [to %audiences%]";
+        assert_eq!(open(message, r#"send "hi" to "#), vec![vec!["audiences"]]);
+        assert_eq!(open(message, "send "), vec![vec!["objects"]]);
+    }
+
+    #[test]
+    fn a_line_the_pattern_cannot_start_opens_nothing() {
+        assert!(open("kill %entities%", "teleport ").is_empty());
+        assert!(open("cancel [the] event", "cancel ").is_empty());
+        // Finished: the pattern has nothing left to open.
+        assert!(open("kill %entities%", "kill player ").is_empty());
+    }
+
+    #[test]
+    fn literals_count_the_words_spelled_out() {
+        let found = open_slots(
+            &Pattern::parse("teleport %entities% to %location%").unwrap(),
+            "teleport player to ",
+        );
+        assert_eq!(found[0].literals, 2);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

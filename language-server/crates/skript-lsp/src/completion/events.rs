@@ -42,9 +42,7 @@ pub fn event_value_items(
         .rfind(|(_, ch)| ch.is_whitespace() || matches!(ch, '%' | '(' | ',' | '"' | '{' | '}'))
         .map_or(0, |(at, ch)| at + ch.len_utf8());
     let word = prefix[word_start..].to_ascii_lowercase();
-    let heading_there = word.starts_with("event-")
-        || (word.len() >= MIN_TYPED && "event-".starts_with(word.as_str()));
-    if !heading_there {
+    if !heading_for_event_value(&word) {
         return Vec::new();
     }
     let Some(values) = enclosing_event_values(catalog, document, line) else {
@@ -114,6 +112,12 @@ pub fn event_value_items(
         ));
     }
     out
+}
+
+/// Whether the lowercased `word` is on its way to `event-…`, the point where
+/// [`event_value_items`] takes over offering event values.
+pub fn heading_for_event_value(word: &str) -> bool {
+    word.starts_with("event-") || (word.len() >= MIN_TYPED && "event-".starts_with(word))
 }
 
 /// The `event-…` labels the enclosing event documents, each with its type.

@@ -22,7 +22,7 @@ use crate::convert::{self, from_lsp_position, to_lsp_range, Encoding};
 use crate::hover::markdown;
 use crate::server::State;
 use crate::{entries, variables};
-use ranking::{filter_text_for, relevance, relevance_to_keywords, sort_key};
+use ranking::{covers_phrase, filter_text_for, relevance, relevance_to_keywords, sort_key};
 use snippet::snippet_for_typed;
 
 /// Most items returned when the user has typed something to narrow by.
@@ -46,6 +46,13 @@ const DECLARED_BONUS: i32 = 400;
 
 /// Added when the typed text is a catalog entry's exact name.
 const EXACT_NAME_BONUS: i32 = 250;
+
+/// Added when the entry's name begins with what was typed. Many entries
+/// share a keyword, and alphabetical order then put "Display Teleport
+/// Duration" above Teleport for `tel`, and "Block Sound" above Player for
+/// `pla`. Smaller than an exact name, which still wins, and shrinking with
+/// every letter the name runs past what was typed.
+const NAME_PREFIX_BONUS: i32 = 60;
 
 /// Taken off a catalog entry per step down its rank: core Skript, then
 /// addons, then syntax the target version cannot run.
@@ -355,6 +362,13 @@ fn catalog_items(
             };
 
             let filter = filter_text_for(&entry.name, pattern);
+            if !covers_phrase(pattern, &filter, typed) {
+                continue;
+            }
+            // Past the first word, an item that accounts for the whole phrase
+            // is a far better guess than a word-level one (`cancel ev` is
+            // Cancel Event, not `event-player`).
+            let whole_phrase = typed.split_whitespace().nth(1).is_some();
             // Scored against the name and the pattern's *opening* keywords
             // separately, taking the best.
             //
@@ -369,9 +383,27 @@ fn catalog_items(
             // Duration` otherwise tie at a whole-word match and the alphabet
             // decides.
             let named_exactly = entry.name.eq_ignore_ascii_case(typed.trim());
+            let named_from_start = !typed.trim().is_empty()
+                && entry
+                    .name
+                    .to_lowercase()
+                    .starts_with(&typed.trim().to_lowercase());
             let matched = relevance(&filter, typed).max(relevance_to_keywords(pattern, typed));
             let score = matched
                 + if named_exactly { EXACT_NAME_BONUS } else { 0 }
+                + if named_from_start && matched > 0 {
+                    // The closer the name is to what was typed, the more:
+                    // `pla` is Player before it is Plain Item.
+                    let extra = entry.name.len().saturating_sub(typed.trim().len()) as i32;
+                    NAME_PREFIX_BONUS - extra.min(NAME_PREFIX_BONUS / 2)
+                } else {
+                    0
+                }
+                + if whole_phrase && matched > 0 {
+                    DECLARED_BONUS
+                } else {
+                    0
+                }
                 + if own && matched > 0 {
                     DECLARED_BONUS
                 } else {

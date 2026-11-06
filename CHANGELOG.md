@@ -13,6 +13,20 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pressing Enter at the end of a line could replace it.** The completion
+  popup was still open with a suggestion selected, and that suggestion stood
+  in for the whole statement although only its last word matched:
+  `kill player` became `player from uuids`, `teleport player to spawn`
+  became `spawn entity types`. A syntax suggestion now has to fit every word
+  of the statement from its start, and none is offered once a string,
+  variable or number has been written, so a finished line shows no popup and
+  Enter starts a new line.
+- **Suggestions rank the syntax you are typing first.** `tel` offers Teleport
+  before Display Teleport Duration, and `cancel ev` offers Cancel Event
+  before `event-player`.
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

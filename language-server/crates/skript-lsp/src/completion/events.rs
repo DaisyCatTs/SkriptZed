@@ -81,7 +81,15 @@ pub fn event_value_items(
                 continue;
             }
         }
-        let score = relevance(&label, typed).max(1) + EVENT_VALUE_BONUS;
+        // Lifted above everything only once `event-` is spelt out. Before
+        // that, `ev` may as well be the start of `event` in a phrase, and
+        // `cancel ev` is Cancel Event, not `event-player`.
+        let bonus = if word.starts_with("event-") {
+            EVENT_VALUE_BONUS
+        } else {
+            0
+        };
+        let score = relevance(&label, typed).max(1) + bonus;
         out.push((
             score,
             CompletionItem {

@@ -155,6 +155,47 @@ pub fn sort_key(score: i32, name: &str) -> String {
     format!("{:05}{name}", (SORT_KEY_CEILING - score).max(0))
 }
 
+/// Whether a syntax item can stand for the whole phrase typed so far.
+///
+/// A catalog item replaces everything from the start of the statement, but
+/// [`relevance`] scores only the last word. So finishing `kill player` and
+/// pressing Enter accepted "Entity/Player/World from UUID", whose name
+/// contains "player", and the line became `player from uuids`. An item must
+/// account for every typed word, each as the start of one of its
+/// words. Once an argument has been written (a string, a variable, a number)
+/// the phrase is past its keywords, and no syntax snippet should replace it.
+pub fn covers_phrase(pattern: &str, filter: &str, typed: &str) -> bool {
+    // A quote can only be the end of a string just closed (`"Welcome %x%"|`):
+    // accepting anything there replaced the closing quote.
+    if typed.contains('"') {
+        return false;
+    }
+    let typed_words: Vec<String> = typed.split_whitespace().map(str::to_lowercase).collect();
+    if typed_words.len() <= 1 {
+        return true;
+    }
+    if typed.contains(['{', '(', '%']) || typed.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    // The phrase starts where the syntax starts: `send m` is Message, which
+    // opens with `send`, not Make Say, which merely has both words later on.
+    let first = &typed_words[0];
+    if !leading_keywords(pattern)
+        .iter()
+        .any(|keyword| keyword.to_lowercase().starts_with(first.as_str()))
+    {
+        return false;
+    }
+    // The rest in any order: the filter text is deduplicated, so a word the
+    // pattern repeats (`message[s]`) appears only once in it.
+    let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
+    typed_words[1..].iter().all(|typed_word| {
+        words
+            .iter()
+            .any(|word| word.starts_with(typed_word.as_str()))
+    })
+}
+
 /// What the client should match the user's typing against.
 ///
 /// The entry name plus the pattern's literal words, so either finds the item:
@@ -350,5 +391,51 @@ mod tests {
     #[test]
     fn a_pattern_with_no_literals_still_yields_the_name() {
         assert_eq!(filter_text_for("Entities", "%*entity types%"), "Entities");
+    }
+
+    /// Finishing a line and pressing Enter accepted the top suggestion, which
+    /// replaced the whole statement: `kill player` became `player from uuids`.
+    #[test]
+    fn a_finished_line_is_not_covered_by_unrelated_syntax() {
+        let covers = |name: &str, pattern: &str, typed: &str| {
+            covers_phrase(pattern, &filter_text_for(name, pattern), typed)
+        };
+        let uuid = (
+            "Entity/Player/World from UUID",
+            "(player|offline player|entity|world) from %uuids%",
+        );
+        assert!(!covers(uuid.0, uuid.1, "kill player"));
+        assert!(!covers("Kill", "kill %entities%", "kill player"));
+        assert!(!covers(
+            "Teleport",
+            "teleport %entities% to %location%",
+            "teleport player to spawn"
+        ));
+        // Arguments mean the keywords are done.
+        let message = ("Message", "(message|send) %objects% [to %commandsenders%]");
+        assert!(!covers(message.0, message.1, "send \"hi\" to player"));
+        assert!(!covers(
+            "Change",
+            "set %~objects% to %objects%",
+            "set {_x} to 5"
+        ));
+        assert!(!covers("Parse", "%text% parsed as %*classinfo%", "\""));
+    }
+
+    #[test]
+    fn a_phrase_being_typed_is_still_covered() {
+        let covers = |name: &str, pattern: &str, typed: &str| {
+            covers_phrase(pattern, &filter_text_for(name, pattern), typed)
+        };
+        let message = ("Message", "(message|send) %objects% [to %commandsenders%]");
+        assert!(covers(message.0, message.1, "send"));
+        assert!(covers(message.0, message.1, "send m"));
+        assert!(covers("Cancel Event", "cancel [the] event", "cancel ev"));
+        // Anchored at the start: Make Say has both words, but not first.
+        assert!(!covers(
+            "Make Say",
+            "make %players% send message %texts%",
+            "send m"
+        ));
     }
 }

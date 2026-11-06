@@ -100,6 +100,10 @@ not belong in this file. Refactors, test additions and CI changes live in
 
 ### Fixed
 
+- **A script could be indexed twice under two spellings of its path.** When
+  the editor and the project scan wrote the same file differently (`~` as
+  `%7E`, or `C:` as `c:`), the new cross-file checks saw the file as its own
+  duplicate. Paths are now compared in one normalised form.
 - **Pressing Enter at the end of a line could replace it.** The completion
   popup was still open with a suggestion selected, and that suggestion stood
   in for the whole statement although only its last word matched:

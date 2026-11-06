@@ -100,9 +100,47 @@ fn parse(text: &str, old: Option<&Tree>) -> Tree {
 }
 
 /// Every open document, plus the cross-file lookups the LSP needs.
+///
+/// Keyed by [`uri_key`], not the URI as written: the project scan builds a
+/// file's URI itself, and an editor may spell the same file differently.
 #[derive(Default)]
 pub struct Workspace {
     documents: HashMap<String, Document>,
+}
+
+/// One spelling for every way of writing a file URI: percent-escapes decoded
+/// and a Windows drive letter lowercased.
+///
+/// On a Windows runner the smoke test opened `file:///C:/Users/RUNNER%7E1/…`
+/// while the project scan had indexed `…/RUNNER~1/…`, the same file. Held
+/// twice, it was a duplicate of its own functions and commands, and the copy
+/// that looked unopened had its diagnostics published over the real ones.
+pub fn uri_key(uri: &str) -> String {
+    let Some(path) = uri.strip_prefix("file://") else {
+        return uri.to_string();
+    };
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (bytes[at], bytes.get(at + 1), bytes.get(at + 2)) {
+            (b'%', Some(&high), Some(&low)) if hex(high).is_some() && hex(low).is_some() => {
+                decoded.push((hex(high).unwrap() * 16 + hex(low).unwrap()) as u8);
+                at += 3;
+            }
+            (byte, _, _) => {
+                decoded.push(byte);
+                at += 1;
+            }
+        }
+    }
+    let mut path = String::from_utf8_lossy(&decoded).into_owned();
+    // `/C:/…`: drive letters are case-insensitive, and clients disagree.
+    if path.as_bytes().get(2) == Some(&b':') && path.as_bytes()[1].is_ascii_alphabetic() {
+        path.replace_range(1..2, &path[1..2].to_ascii_lowercase());
+    }
+    format!("file://{path}")
 }
 
 impl Workspace {
@@ -112,30 +150,33 @@ impl Workspace {
 
     pub fn open(&mut self, uri: impl Into<String>, text: impl Into<String>) {
         let uri = uri.into();
-        self.documents.insert(uri.clone(), Document::new(uri, text));
+        // Replaces a copy the project scan made under another spelling, so
+        // replies go to the URI the editor uses.
+        self.documents
+            .insert(uri_key(&uri), Document::new(uri, text));
     }
 
     /// Adds a document parsed elsewhere, unless one is already held for its
     /// URI. Lets a caller parse without holding whatever lock guards this.
     pub fn insert_if_absent(&mut self, document: Document) {
         self.documents
-            .entry(document.uri.clone())
+            .entry(uri_key(&document.uri))
             .or_insert(document);
     }
 
     pub fn update(&mut self, uri: &str, text: impl Into<String>) {
-        match self.documents.get_mut(uri) {
+        match self.documents.get_mut(&uri_key(uri)) {
             Some(document) => document.update(text),
             None => self.open(uri.to_string(), text),
         }
     }
 
     pub fn close(&mut self, uri: &str) {
-        self.documents.remove(uri);
+        self.documents.remove(&uri_key(uri));
     }
 
     pub fn get(&self, uri: &str) -> Option<&Document> {
-        self.documents.get(uri)
+        self.documents.get(&uri_key(uri))
     }
 
     pub fn documents(&self) -> impl Iterator<Item = &Document> {
@@ -393,6 +434,41 @@ fn kinds_match(wanted: SymbolKind, found: SymbolKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The project scan and the editor can spell one file two ways; it must
+    /// still be one document, under the editor's spelling.
+    #[test]
+    fn one_file_under_two_spellings_is_one_document() {
+        assert_eq!(
+            uri_key("file:///C:/Users/RUNNER%7E1/a.sk"),
+            uri_key("file:///c:/Users/RUNNER~1/a.sk")
+        );
+        assert_eq!(
+            uri_key("file:///e%3A/Dev%20Projects/a.sk"),
+            "file:///e:/Dev Projects/a.sk"
+        );
+        assert_ne!(
+            uri_key("file:///home/a/A.sk"),
+            uri_key("file:///home/a/a.sk")
+        );
+
+        let mut workspace = Workspace::new();
+        workspace.insert_if_absent(Document::new(
+            "file:///C:/Users/RUNNER~1/a.sk".to_string(),
+            "function f():
+	stop
+",
+        ));
+        workspace.open(
+            "file:///C:/Users/RUNNER%7E1/a.sk",
+            "function f():
+	stop
+",
+        );
+        assert_eq!(workspace.len(), 1);
+        let held = workspace.get("file:///c:/Users/RUNNER~1/a.sk").unwrap();
+        assert_eq!(held.uri(), "file:///C:/Users/RUNNER%7E1/a.sk");
+    }
 
     #[test]
     fn tracks_documents() {

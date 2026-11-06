@@ -63,6 +63,15 @@ const SUPERTYPES: &[(&str, &[&str])] = &[
     ("itemstack", &["itemtype"]),
 ];
 
+/// Types whose literal is another type's value with something after it:
+/// `sharpness 5` is an enchantment type, written as an enchantment and a
+/// level. Without this an `%enchantment types%` slot offered nothing.
+const VALUES_OF: &[(&str, &str)] = &[("enchantmenttype", "enchantment")];
+
+/// Lists longer than this are left out. Particles (333 values) would fill the
+/// capped list on their own, and nobody browses that many by prefix.
+const MAX_LISTED_VALUES: usize = 150;
+
 /// The catch-all type: a slot of this type takes anything.
 const OBJECT: &str = "object";
 /// `%*classinfo%`: a type name, such as `player` in `parsed as player`.
@@ -303,8 +312,16 @@ impl TypeNames {
     }
 }
 
+/// The types a value of type `id` also is, by [`SUPERTYPES`].
+pub(super) fn supertypes(id: &str) -> &'static [&'static str] {
+    SUPERTYPES
+        .iter()
+        .find(|(ty, _)| *ty == id)
+        .map_or(&[][..], |(_, supertypes)| supertypes)
+}
+
 /// `Living Entity`, `living entities` and `living-entity` all key alike.
-fn key(name: &str) -> String {
+pub(super) fn key(name: &str) -> String {
     name.chars()
         .filter(|c| !c.is_whitespace() && *c != '-' && *c != '_')
         .flat_map(char::to_lowercase)
@@ -343,10 +360,7 @@ impl Wanted {
         if self.types.iter().any(|ty| ty == OBJECT || ty == id) {
             return Some(0);
         }
-        let supertypes = SUPERTYPES
-            .iter()
-            .find(|(ty, _)| *ty == id)
-            .map_or(&[][..], |(_, supertypes)| supertypes);
+        let supertypes = supertypes(id);
         if self
             .types
             .iter()
@@ -557,12 +571,17 @@ fn literals(catalog: &Catalog, wanted: &Wanted, word: &str) -> Vec<Candidate> {
                 .map(|entry| entry.name.to_lowercase())
                 .collect()
         } else {
+            let listed = VALUES_OF
+                .iter()
+                .find(|(ty, _)| ty == type_id)
+                .map_or(type_id.as_str(), |(_, values)| values);
             catalog
                 .docs()
                 .entries(Category::Type)
                 .iter()
-                .find(|entry| entry.id.eq_ignore_ascii_case(type_id))
+                .find(|entry| entry.id.eq_ignore_ascii_case(listed))
                 .map(|entry| enum_values(&entry.patterns))
+                .filter(|values| values.len() <= MAX_LISTED_VALUES)
                 .unwrap_or_default()
         };
         for value in values {
@@ -593,10 +612,16 @@ fn enum_values(patterns: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pattern in patterns {
         let lower = pattern.to_lowercase();
-        let open_ended = lower.contains("etc") || lower.contains("see ");
-        let markup = pattern.contains([
-            '<', '>', '[', ']', '#', '"', '(', ')', '{', '%', '&', ';', '$', ':',
-        ]);
+        // Matched as whole items: a substring test for `etc` threw away the
+        // villager professions, because `fletcher` contains it.
+        let open_ended = lower.starts_with("see ")
+            || lower
+                .split(',')
+                .any(|item| matches!(item.trim(), "etc" | "etc." | "..." | "…"));
+        // Parentheses and `:` are judged per value below: `leashed
+        // (gone|disappeared)` and `minecraft:entity_drops` are values, while
+        // these only ever appear in a description or a syntax sketch.
+        let markup = pattern.contains(['<', '>', '[', ']', '#', '"', '{', '%', '&', ';', '$']);
         // One value per pattern is a list too (particles are written that
         // way); one pattern with no comma is a description such as boolean's
         // `true/yes/on or false/no/off`.
@@ -604,16 +629,46 @@ fn enum_values(patterns: &[String]) -> Vec<String> {
         if open_ended || markup || !listed {
             continue;
         }
-        for value in pattern.split([',', '/']) {
-            let value = value.trim();
-            let value = value
-                .strip_prefix("and ")
-                .or_else(|| value.strip_prefix("or "))
-                .unwrap_or(value)
-                .trim();
-            if !value.is_empty() && !out.iter().any(|known| known == value) {
-                out.push(value.to_string());
+        for item in pattern.split(',') {
+            for value in expand_item(item) {
+                if !value.is_empty() && !out.contains(&value) {
+                    out.push(value);
+                }
             }
+        }
+    }
+    out
+}
+
+/// The values one comma-separated item spells: `a/b` is two, `leashed
+/// (gone|disappeared)` is two, `damage animation (non-functional)` is one
+/// with its note dropped. A leading `and`/`or`/`a`/`an` is not part of the
+/// value: `a lightning` and `lightning` are the same damage cause.
+fn expand_item(item: &str) -> Vec<String> {
+    let item = item.trim();
+    let (head, choices, tail) = match (item.find('('), item.find(')')) {
+        (Some(open), Some(close)) if open < close => {
+            let inner = &item[open + 1..close];
+            let choices: Vec<&str> = if inner.contains('|') {
+                inner.split('|').collect()
+            } else {
+                vec![""]
+            };
+            (&item[..open], choices, &item[close + 1..])
+        }
+        _ => (item, vec![""], ""),
+    };
+    let mut out = Vec::new();
+    for choice in choices {
+        let joined = format!("{head} {choice} {tail}");
+        for value in joined.split('/') {
+            let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+            let value = ["and ", "or ", "a ", "an "]
+                .iter()
+                .find_map(|lead| value.strip_prefix(lead))
+                .unwrap_or(&value)
+                .to_string();
+            out.push(value);
         }
     }
     out
@@ -640,6 +695,71 @@ mod tests {
         assert!(values(&["[<number> [of]] [all/every] <alias>"]).is_empty());
         assert!(values(&["true/yes/on or false/no/off"]).is_empty());
         assert!(values(&["&lt;number&gt; $ or $ &lt;number&gt;, where"]).is_empty());
+    }
+
+    #[test]
+    fn a_word_containing_etc_does_not_make_a_list_open_ended() {
+        let values = enum_values(&["butcher, fletcher, librarian".to_string()]);
+        assert_eq!(values, vec!["butcher", "fletcher", "librarian"]);
+    }
+
+    #[test]
+    fn choices_notes_articles_and_namespaces_are_read_per_value() {
+        let values = enum_values(&[
+            "leashed (gone|disappeared), damage animation (non-functional), a lightning, \
+             lightning, minecraft:entity_drops"
+                .to_string(),
+        ]);
+        assert_eq!(
+            values,
+            vec![
+                "leashed gone",
+                "leashed disappeared",
+                "damage animation",
+                "lightning",
+                "minecraft:entity_drops"
+            ]
+        );
+    }
+
+    /// Every type in the real `docs.json` that lists its values, at most
+    /// [`MAX_LISTED_VALUES`] of them, yields that list, and none of the open
+    /// ended ones (items, entities) does. Skips without the file.
+    #[test]
+    fn every_listed_type_in_the_real_database_yields_its_values() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../vendor/docs.json");
+        let Ok(text) = std::fs::read_to_string(path) else {
+            eprintln!("vendor/docs.json not present, skipping");
+            return;
+        };
+        let docs = skript_docs::Docs::parse(&text).expect("docs.json parses");
+        let count = |id: &str| {
+            docs.entries(Category::Type)
+                .iter()
+                .find(|entry| entry.id == id)
+                .map_or(0, |entry| enum_values(&entry.patterns).len())
+        };
+        for id in [
+            "damagecause",
+            "biome",
+            "potioneffecttype",
+            "enchantment",
+            "villagerprofession",
+            "gamerule",
+            "unleashreason",
+            "entityeffect",
+            "gamemode",
+            "teleportcause",
+        ] {
+            let found = count(id);
+            assert!(
+                (1..=MAX_LISTED_VALUES).contains(&found),
+                "{id} lists {found} values"
+            );
+        }
+        for id in ["itemtype", "itemstack", "entity", "entitydata", "boolean"] {
+            assert_eq!(count(id), 0, "{id} is not a plain list");
+        }
     }
 
     #[test]

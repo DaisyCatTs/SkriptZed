@@ -61,6 +61,8 @@ pub struct State {
     pub open_in_editor: HashSet<String>,
     pub analyzer: AnalyzerState,
     pub rcon: crate::rcon::RconState,
+    /// Project diagnostics for files that are not open.
+    pub project: diagnostics::project::ProjectState,
 }
 
 /// SkAnalyzer, which loads the real Skript and reports what it rejects.
@@ -97,6 +99,7 @@ impl Default for State {
             open_in_editor: HashSet::new(),
             analyzer: AnalyzerState::default(),
             rcon: crate::rcon::RconState::default(),
+            project: diagnostics::project::ProjectState::default(),
         }
     }
 }
@@ -137,6 +140,26 @@ fn apply_disk_changes(
             None => {}
         }
     }
+}
+
+/// The card for a `loop-…` name under the cursor, if that is what is there.
+fn loop_hover(state: &State, at: &TextDocumentPositionParams) -> Option<Hover> {
+    let document = state.workspace.get(at.text_document.uri.as_str())?;
+    let position = crate::convert::from_lsp_position(document.text(), at.position, state.encoding);
+    let (text, span) = completion::loop_hover(
+        state.catalog.as_ref(),
+        document,
+        position.line,
+        position.character as usize,
+    )?;
+    Some(Hover {
+        contents: HoverContents::Markup(hover::markdown(text)),
+        range: Some(crate::convert::to_lsp_range(
+            document.text(),
+            span,
+            state.encoding,
+        )),
+    })
 }
 
 impl Backend {
@@ -308,7 +331,14 @@ impl LanguageServer for Backend {
                 (uri, deleted, parsed)
             })
             .collect();
-        apply_disk_changes(&mut *self.state.write().await, changes);
+        {
+            let mut state = self.state.write().await;
+            for (uri, _, _) in &changes {
+                state.project.changed(uri);
+            }
+            apply_disk_changes(&mut state, changes);
+        }
+        self.schedule_project_diagnostics().await;
 
         // A new file can resolve an `unknown-function` in a file the user
         // already has open, so every open document is rechecked.
@@ -328,14 +358,31 @@ impl LanguageServer for Backend {
             return;
         };
 
-        let (reload, switched) = {
+        let (reload, switched, cleared) = {
             let mut state = self.state.write().await;
             apply_settings(&mut state, &settings);
             let reload = settings.affects_catalog(&state.settings);
             let switched = settings.features != state.settings.features;
+            let was_on = diagnostics::project::enabled(&state);
             state.settings = settings;
-            (reload, switched)
+            let is_on = diagnostics::project::enabled(&state);
+            // Switched off: what closed files were sent must not linger.
+            // Switched on: every closed file needs checking.
+            let cleared = if was_on && !is_on {
+                state.project.clear()
+            } else {
+                if is_on && !was_on {
+                    state.project.everything();
+                }
+                Vec::new()
+            };
+            (reload, switched, cleared)
         };
+        for uri in cleared {
+            if let Ok(url) = Url::parse(&uri) {
+                self.client.publish_diagnostics(url, Vec::new(), None).await;
+            }
+        }
         // Colours and hints are pulled by the editor, which keeps showing the
         // old ones until asked again. Spawned: these are requests to the
         // client, and one that never answers must not stall this handler.
@@ -352,6 +399,7 @@ impl LanguageServer for Backend {
             self.spawn_catalog_load().await;
         }
         self.republish_open().await;
+        self.schedule_project_diagnostics().await;
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
@@ -370,17 +418,26 @@ impl LanguageServer for Backend {
             let mut state = self.state.write().await;
             state.workspace.open(uri.clone(), params.text_document.text);
             state.open_in_editor.insert(uri.clone());
+            // Its ordinary publish takes over from what the pass sent; its
+            // buffer may differ from the file the index read.
+            state.project.opened(&uri);
+            state.project.changed(&uri);
         }
         self.publish_after_edit(&uri).await;
+        self.schedule_project_diagnostics().await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
         // Sync is FULL, so the last change carries the whole document.
         if let Some(change) = params.content_changes.into_iter().next_back() {
-            self.state.write().await.workspace.update(&uri, change.text);
+            let mut state = self.state.write().await;
+            state.workspace.update(&uri, change.text);
+            // A closed caller of what this edit declares may now be broken.
+            state.project.changed(&uri);
         }
         self.publish_after_edit(&uri).await;
+        self.schedule_project_diagnostics().await;
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -423,6 +480,10 @@ impl LanguageServer for Backend {
             state.open_in_editor.remove(&uri);
             state.analyzer.findings.remove(&uri);
             state.rcon.findings.remove(&uri);
+            // Unsaved edits were discarded, and the file now gets the project
+            // diagnostics every closed file gets, once the pass runs.
+            state.project.changed(&uri);
+            state.project.closed(&uri);
         }
         // Clear the file's diagnostics, or they linger in the problems panel.
         self.client
@@ -432,6 +493,7 @@ impl LanguageServer for Backend {
         if self.sync_custom_syntax().await {
             self.republish_open().await;
         }
+        self.schedule_project_diagnostics().await;
     }
 
     async fn document_symbol(
@@ -468,6 +530,12 @@ impl LanguageServer for Backend {
         let Some(state) = self.state_if(|on| on.hover).await else {
             return Ok(None);
         };
+        // Which loop a `loop-…` name refers to is a question about the lines
+        // around it, which the catalog's one card for "Loop value" cannot
+        // answer.
+        if let Some(hover) = loop_hover(&state, &params.text_document_position_params) {
+            return Ok(Some(hover));
+        }
         let answer = hover::prepare(&state, &params);
         // Not held across the network fetch for examples.
         drop(state);

@@ -32,6 +32,7 @@ pub const TOKEN_TYPES: &[&str] = &[
     "skriptStructure",
     "skriptType",
     "function",
+    "skriptTodo",
 ];
 
 pub const TOKEN_MODIFIERS: &[&str] = &["deprecated", "defaultLibrary"];
@@ -47,6 +48,13 @@ const TYPE: u32 = 6;
 
 /// Index of `skriptStructure` in [`TOKEN_TYPES`].
 const STRUCTURE: u32 = 5;
+
+/// Index of `skriptTodo` in [`TOKEN_TYPES`].
+const TODO: u32 = 8;
+
+/// The tags a comment can open with that are worth seeing at a glance.
+/// Upper case only: `note` in a sentence is prose, `NOTE` is a marker.
+const TODO_TAGS: &[&str] = &["TODO", "FIXME", "XXX", "NOTE"];
 
 /// How deep slot classification recurses. Three levels covers
 /// `the helmet of the target entity of player` without letting a pathological
@@ -254,8 +262,49 @@ pub fn tokens(
         };
         classify_line(&mut painter, catalog, symbols, &by_line, raw, code);
     }
+    todo_tags(text, &mut tokens);
 
     encode(tokens, &mut to_column)
+}
+
+/// A token on each `TODO`, `FIXME`, `XXX` and `NOTE` in a comment, the tag
+/// word alone, so the rest of the comment keeps its colour.
+///
+/// Comments are found by the server's one rule (`lines::comment_start`), so
+/// `send "item #1 TODO"` stays a string, and a `###` block's interior counts
+/// as comment throughout.
+fn todo_tags(text: &str, tokens: &mut Vec<Token>) {
+    let block = lines::block_comment_lines(text);
+    for (number, raw) in text.lines().enumerate() {
+        let start = if block.contains(&number) {
+            0
+        } else if let Some(start) = lines::comment_start(raw) {
+            start
+        } else {
+            continue;
+        };
+        let comment = &raw[start..];
+        let is_word = |ch: char| ch.is_alphanumeric() || ch == '_';
+        let mut word_start = None;
+        for (at, ch) in comment.char_indices().chain([(comment.len(), ' ')]) {
+            match (word_start, is_word(ch)) {
+                (None, true) => word_start = Some(at),
+                (Some(from), false) => {
+                    if TODO_TAGS.contains(&&comment[from..at]) {
+                        tokens.push(Token {
+                            line: number as u32,
+                            start: (start + from) as u32,
+                            length: (at - from) as u32,
+                            token_type: TODO,
+                            modifiers: 0,
+                        });
+                    }
+                    word_start = None;
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Colours one executable line. `code` is `raw` without indentation or
@@ -826,6 +875,7 @@ mod tests {
             ("skriptStructure", super::STRUCTURE),
             ("skriptType", super::TYPE),
             ("function", super::FUNCTION),
+            ("skriptTodo", super::TODO),
         ] {
             assert_eq!(
                 super::TOKEN_TYPES[index as usize],
@@ -1174,5 +1224,41 @@ mod entry_classification {
                 "line {expected} was not classified; got {seen:?}"
             );
         }
+    }
+
+    /// The tag words in comments, each as its own token: `(line, start,
+    /// length)` in bytes.
+    fn todo_spans(text: &str) -> Vec<(u32, u32, u32)> {
+        let mut found = Vec::new();
+        todo_tags(text, &mut found);
+        found
+            .into_iter()
+            .map(|token| {
+                assert_eq!(token.token_type, TODO);
+                (token.line, token.start, token.length)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn todo_tags_in_comments_are_tokens_on_the_tag_alone() {
+        let text = "# TODO: tidy\non join:\n\tstop # FIXME later, XXX\n\
+                    \tsend \"TODO #1\" # NOTE\n###\nNOTE in a block\n###\n# todo, TODOs, a note\n";
+        assert_eq!(
+            todo_spans(text),
+            vec![(0, 2, 4), (2, 8, 5), (2, 21, 3), (3, 18, 4), (5, 0, 4)]
+        );
+    }
+
+    #[test]
+    fn a_todo_tag_reaches_the_client_after_the_lines_code() {
+        let produced = tokens(
+            &Catalog::build(fallback_docs()),
+            "on join:\n\tcancel the event # TODO\n",
+            &FileSymbols::default(),
+            |_, column| column,
+        );
+        assert_eq!(produced.last().map(|token| token.token_type), Some(TODO));
+        assert_eq!(produced.last().map(|token| token.length), Some(4));
     }
 }

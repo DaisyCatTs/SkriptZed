@@ -22,6 +22,11 @@
   { "token_type": "skriptSection", "style": ["keyword.repeat", "keyword"] },
   { "token_type": "skriptStructure", "style": ["keyword"] },
   { "token_type": "skriptType", "style": ["type"] },
+  // `TODO`, `FIXME`, `XXX` and `NOTE` in a comment, the tag word only. A
+  // theme rarely defines `comment.todo`, and every theme defines `comment`,
+  // which would make the token invisible, so the chain falls to emphasis and
+  // the weight carries it in any theme.
+  { "token_type": "skriptTodo", "style": ["comment.todo", "emphasis.strong", "emphasis"], "font_weight": "bold" },
 
   // ---- standard LSP token types --------------------------------------------
   { "token_type": "function", "token_modifiers": ["defaultLibrary"], "style": ["function.builtin", "function"] },

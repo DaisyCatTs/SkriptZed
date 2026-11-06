@@ -2,10 +2,12 @@
 
 mod arguments;
 mod events;
+mod loops;
 mod ranking;
 mod sections;
 mod snippet;
 
+pub use loops::loop_hover;
 pub use sections::entry_hover as section_entry_hover;
 pub use sections::is_documented_entry;
 
@@ -233,6 +235,18 @@ fn complete(state: &State, params: &CompletionParams) -> Option<CompletionRespon
         ));
     }
 
+    // Offered with or without the catalog: a list variable or `10 times`
+    // needs none to be named.
+    let loop_values = loops::loop_value_items(
+        state.catalog.as_ref(),
+        document,
+        position,
+        prefix,
+        state.encoding,
+    );
+    let loops_offered = !loop_values.is_empty();
+    items.extend(loop_values);
+
     if state.settings.features.variable_completion {
         items.extend(bare_local_items(document, position, prefix, state.encoding));
     }
@@ -260,7 +274,9 @@ fn complete(state: &State, params: &CompletionParams) -> Option<CompletionRespon
     // the list it has as the word grows, and never sees the empty answer that
     // the finished word (`kill player`) gets, so the popup stayed up for Enter.
     Some(CompletionResponse::List(CompletionList {
-        is_incomplete: truncated || arguments_offered,
+        // Loop values likewise: the finished `loop-player` must be asked
+        // about, and gets nothing, or Enter accepts it over a newline.
+        is_incomplete: truncated || arguments_offered || loops_offered,
         items,
     }))
 }
@@ -491,6 +507,10 @@ fn catalog_items(
 /// Fills in the documentation of the one item the user is looking at.
 pub fn completion_resolve(state: &State, mut item: CompletionItem) -> CompletionItem {
     let Some(data) = item.data.take() else {
+        // The project's own functions carry no data: see the function.
+        if let Some(text) = crate::hover::declared_function_documentation(&state.workspace, &item) {
+            item.documentation = Some(Documentation::MarkupContent(markdown(text)));
+        }
         return item;
     };
     let Some(catalog) = &state.catalog else {

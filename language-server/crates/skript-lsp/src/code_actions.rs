@@ -69,6 +69,32 @@ pub fn code_action(state: &State, params: &CodeActionParams) -> Option<Vec<CodeA
                 ));
             }
 
+            // The suggestions are worked out again from the text under the
+            // diagnostic rather than carried in it: the catalog is right
+            // here, and `CodeActionParams` hands back only range and code.
+            "unknown-event" => {
+                let Some(catalog) = state.catalog.as_ref() else {
+                    continue;
+                };
+                let text = document.text();
+                let start = from_lsp_position(text, diagnostic.range.start, state.encoding);
+                let end = from_lsp_position(text, diagnostic.range.end, state.encoding);
+                if start.line != end.line {
+                    continue;
+                }
+                let line = document.line(start.line);
+                let Some(typed) = line.get(start.character as usize..end.character as usize) else {
+                    continue;
+                };
+                for suggestion in crate::diagnostics::event_suggestions(catalog, typed) {
+                    actions.push(fix(
+                        &format!("Change to `on {suggestion}`"),
+                        vec![TextEdit::new(diagnostic.range, suggestion)],
+                        diagnostic,
+                    ));
+                }
+            }
+
             "unclosed-block-comment" => actions.push(fix(
                 "Close the block comment",
                 vec![TextEdit::new(end_of_file, "###\n".into())],
@@ -519,6 +545,47 @@ on quit:
             diagnostic,
         );
         assert_eq!(titles, vec!["Remove `cancel event`"]);
+    }
+
+    #[test]
+    fn a_mistyped_event_is_offered_its_correction() {
+        let mut state = State {
+            catalog: Some(skript_docs::Catalog::build(
+                skript_docs::Docs::parse(
+                    r#"{ "events": [{ "id": "join", "name": "On Join", "patterns": ["[player] join[ing]"] }] }"#,
+                )
+                .unwrap(),
+            )),
+            ..State::default()
+        };
+        state.workspace.open("file:///t.sk", "on jion:\n\tstop\n");
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 3), Position::new(0, 7)),
+            code: Some(NumberOrString::String("unknown-event".into())),
+            ..Default::default()
+        };
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: "file:///t.sk".parse().unwrap(),
+            },
+            range: diagnostic.range,
+            context: CodeActionContext {
+                diagnostics: vec![diagnostic],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+        let Some(CodeActionOrCommand::CodeAction(action)) =
+            code_action(&state, &params).and_then(|mut actions| actions.pop())
+        else {
+            panic!("no fix offered");
+        };
+        assert_eq!(action.title, "Change to `on join`");
+        let edits = &action.edit.unwrap().changes.unwrap()[&params.text_document.uri];
+        assert_eq!(edits[0].new_text, "join");
+        assert_eq!(edits[0].range, params.range);
     }
 
     /// Two unknown calls on one line: each fix must name its own call.

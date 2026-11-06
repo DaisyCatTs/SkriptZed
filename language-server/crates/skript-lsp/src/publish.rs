@@ -204,7 +204,11 @@ fn document_diagnostics(
                 .is_known()
                 .then_some(())
                 .and(state.uninstalled.as_ref()),
-            state.diagnostics,
+            diagnostics::Options {
+                events_known: events_known(state),
+                target_version_known: target_version_known(state),
+                ..state.diagnostics
+            },
         )
     };
     let text = document.text();
@@ -212,6 +216,12 @@ fn document_diagnostics(
         .into_iter()
         .map(|diagnostic| to_lsp_diagnostic(text, url, diagnostic, state.encoding))
         .collect();
+    // Duplicates in other files: converted apart, their links leave this file.
+    if state.settings.features.diagnostics {
+        converted.extend(diagnostics::project::duplicate_diagnostics(
+            state, document, url,
+        ));
+    }
     // Real Skript's verdict from the last save, kept until the next one, the
     // way a build check's results are.
     if let Some(found) = state.analyzer.findings.get(document.uri()) {
@@ -228,7 +238,46 @@ fn document_diagnostics(
     converted
 }
 
-fn to_lsp_diagnostic(
+/// Whether the catalog knows every event the server can have, which is what
+/// makes "this event does not exist" sayable.
+///
+/// Needs the core database (the offline fallback has no events at all), a
+/// `plugins/` folder to know what is installed, and syntax for every addon
+/// found there. An addon missing from the catalog, say a private one that
+/// SkriptHub has never seen, could register any event.
+fn events_known(state: &State) -> bool {
+    let Some(catalog) = state.catalog.as_ref() else {
+        return false;
+    };
+    let has_core_events = catalog
+        .docs()
+        .entries(skript_docs::Category::Event)
+        .iter()
+        .any(|entry| entry.addon.is_none());
+    let loaded = catalog.addons();
+    let every_addon_loaded = state
+        .detection
+        .addons()
+        .filter(|addon| !addon.is_skript)
+        .all(|addon| {
+            loaded
+                .iter()
+                .any(|known| known.name.eq_ignore_ascii_case(&addon.name))
+        });
+    has_core_events && state.detection.is_known() && every_addon_loaded
+}
+
+/// Whether the catalog's target version is the server's own rather than the
+/// loaded database's. A skript-minestom database's `since` values are not
+/// Bukkit Skript versions, and a custom syntax file's are its addon's, with
+/// nothing to tell them from core entries.
+fn target_version_known(state: &State) -> bool {
+    !state.settings.is_minestom()
+        && state.settings.custom_syntax_paths.is_empty()
+        && (state.settings.skript_version.is_some() || state.detection.skript_version().is_some())
+}
+
+pub(crate) fn to_lsp_diagnostic(
     text: &str,
     url: &Url,
     diagnostic: diagnostics::Diagnostic,
@@ -247,7 +296,8 @@ fn to_lsp_diagnostic(
         // syntax's literal spans and only if the theme opts in. The tag is the
         // theme-independent path, and it is what gives the line a
         // strikethrough rather than just a colour.
-        // A local set but never read is faded as dead code the same way.
+        // A local set but never read, and code after a `stop`, are faded as
+        // dead code the same way.
         tags: if diagnostic.code == "deprecated-syntax" {
             Some(vec![DiagnosticTag::DEPRECATED])
         } else if diagnostic.is_unnecessary() {

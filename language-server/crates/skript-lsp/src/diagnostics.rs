@@ -19,7 +19,13 @@
 //!
 //! * `cancel event` in an event that cannot be cancelled ([`cancel`]);
 //! * a local variable read but never set, or set but never read, in one
-//!   trigger ([`locals`]).
+//!   trigger ([`locals`]);
+//! * a section header with no body ([`empty_section`]) and statements after
+//!   a `stop` or `return` ([`unreachable`]), both of which Skript warns about
+//!   itself;
+//! * `player` where the trigger has no player ([`event_values`]);
+//! * an `on …` header that is a typo of a known event ([`unknown_event`]);
+//! * syntax newer than the server's Skript ([`newer_syntax`]).
 //!
 //! "This line matches no known pattern" is opt-in. Any addon can register
 //! syntax the catalog has never heard of, so turning it on by default would
@@ -32,8 +38,19 @@ use crate::lines;
 
 mod arity;
 mod cancel;
+#[cfg(test)]
+mod corpus_check;
+mod doc_comments;
+mod empty_section;
+mod event_values;
 mod layout;
 mod locals;
+mod newer_syntax;
+pub mod project;
+mod unknown_event;
+mod unreachable;
+
+pub(crate) use unknown_event::suggestions as event_suggestions;
 
 /// Severity, mirroring LSP's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +79,7 @@ impl Diagnostic {
     /// Whether a client should render the range as dead code: faded, and
     /// left out of the problems count by editors that honour the tag.
     pub fn is_unnecessary(&self) -> bool {
-        self.code == locals::NEVER_READ
+        self.code == locals::NEVER_READ || self.code == unreachable::CODE
     }
 }
 
@@ -90,6 +107,23 @@ pub struct Options {
     /// answered wrongly. Claiming a function is missing and taking it back a
     /// second later is worse than saying nothing for a second.
     pub project_indexed: bool,
+    /// Report `player` and friends where the trigger has none.
+    pub event_values: bool,
+    /// Report an `on …` header that is a typo of a known event.
+    pub unknown_events: bool,
+    /// Report syntax newer than the server's Skript. Off by default: the
+    /// loaded database cannot show syntax a later Skript rewrote, so on a
+    /// 2.10 server `play flame at player` reads as needing 2.14, where the
+    /// old Play Effect still takes it.
+    pub newer_syntax: bool,
+    /// Whether the catalog knows every event the server has: the core
+    /// database loaded, the `plugins/` folder found, and every addon in it
+    /// represented. Not a user setting; an unknown event is only sayable then.
+    pub events_known: bool,
+    /// Whether the catalog's target version is the server's own, from the
+    /// detected `Skript.jar` or the `skriptVersion` setting, rather than the
+    /// version of whatever database loaded. Not a user setting.
+    pub target_version_known: bool,
 }
 
 impl Default for Options {
@@ -99,6 +133,11 @@ impl Default for Options {
             deprecated_syntax: true,
             local_variables: true,
             project_indexed: false,
+            event_values: true,
+            unknown_events: true,
+            newer_syntax: false,
+            events_known: false,
+            target_version_known: false,
         }
     }
 }
@@ -120,6 +159,7 @@ pub fn check(
     check_block_comments(document, &mut out);
     check_duplicate_declarations(document, &mut out);
     check_unknown_options(document, &mut out);
+    doc_comments::check(document, workspace, options, &mut out);
     if options.local_variables {
         locals::check(document, catalog, &mut out);
     }
@@ -129,9 +169,21 @@ pub fn check(
         arity::check(document, workspace, catalog, &mut out);
     }
 
+    empty_section::check(document, &mut out);
+    unreachable::check(document, &mut out);
+
     if let Some(catalog) = catalog {
         check_catalog(document, catalog, uninstalled, options, &mut out);
         cancel::check(document, catalog, &mut out);
+        if options.event_values {
+            event_values::check(document, catalog, &mut out);
+        }
+        if options.unknown_events && options.events_known {
+            unknown_event::check(document, catalog, uninstalled, &mut out);
+        }
+        if options.newer_syntax && options.target_version_known {
+            newer_syntax::check(document, catalog, &mut out);
+        }
     }
 
     out.sort_by_key(|diagnostic| {
@@ -367,12 +419,45 @@ fn check_unknown_options(document: &Document, out: &mut Vec<Diagnostic>) {
     }
 }
 
+/// What every file can call, gathered once for a run over many files
+/// ([`project`]); per file it cost a scan of the whole project each.
+pub struct CrossFile<'w> {
+    functions: std::collections::HashSet<&'w str>,
+    arities: arity::Shared,
+}
+
+impl<'w> CrossFile<'w> {
+    pub fn new(workspace: &'w Workspace, catalog: Option<&'w Catalog>) -> Self {
+        Self {
+            functions: global_functions(workspace, catalog),
+            arities: arity::Shared::new(workspace, catalog),
+        }
+    }
+}
+
+/// The checks whose answer depends on other files, for a file nobody has
+/// open ([`project`]): an edit elsewhere can change them and nothing else.
+pub fn check_cross_file(document: &Document, shared: &CrossFile<'_>) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    report_unknown_functions(document, &shared.functions, &mut out);
+    arity::check_shared(document, &shared.arities, &mut out);
+    out
+}
+
 fn check_unknown_functions(
     document: &Document,
     workspace: &Workspace,
     catalog: Option<&Catalog>,
     out: &mut Vec<Diagnostic>,
 ) {
+    report_unknown_functions(document, &global_functions(workspace, catalog), out);
+}
+
+/// The functions any file can call: the catalog's and every global one.
+fn global_functions<'w>(
+    workspace: &'w Workspace,
+    catalog: Option<&'w Catalog>,
+) -> std::collections::HashSet<&'w str> {
     // Gathered once. Calling `Workspace::definitions` per reference walked every
     // indexed document and rebuilt its whole symbol tree each time, so a file
     // with N calls cost N full-workspace scans on every keystroke.
@@ -392,18 +477,32 @@ fn check_unknown_functions(
         }
     }
     for other in workspace.documents() {
-        let same_file = other.uri() == document.uri();
         for symbol in other.symbols().flat() {
-            if !symbol.kind.is_function() {
-                continue;
+            // A `local function` is invisible outside the file declaring it;
+            // `report_unknown_functions` adds the file's own.
+            if symbol.kind == SymbolKind::Function {
+                declared.insert(symbol.name.as_str());
             }
-            // A `local function` is invisible outside the file declaring it.
-            if symbol.kind == SymbolKind::LocalFunction && !same_file {
-                continue;
-            }
-            declared.insert(symbol.name.as_str());
         }
     }
+    declared
+}
+
+/// Calls in `document` to a function neither `global` nor the file itself
+/// declares.
+fn report_unknown_functions(
+    document: &Document,
+    global: &std::collections::HashSet<&str>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let local: std::collections::HashSet<&str> = document
+        .symbols()
+        .flat()
+        .into_iter()
+        .filter(|symbol| symbol.kind == SymbolKind::LocalFunction)
+        .map(|symbol| symbol.name.as_str())
+        .collect();
+    let declared = |name: &str| global.contains(name) || local.contains(name);
 
     for reference in &document.symbols().references {
         if reference.kind != SymbolKind::Function {
@@ -420,7 +519,7 @@ fn check_unknown_functions(
         if preceded_by_new(document, reference) {
             continue;
         }
-        if !declared.contains(reference.name.as_str()) {
+        if !declared(reference.name.as_str()) {
             out.push(Diagnostic {
                 range: reference.range,
                 severity: Severity::Error,

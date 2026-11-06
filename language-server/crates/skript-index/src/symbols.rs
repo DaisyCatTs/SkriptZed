@@ -9,6 +9,10 @@ use tree_sitter::{Node, Tree};
 
 use crate::text::Range;
 
+pub mod doc;
+
+pub use doc::{DocComment, DocParam};
+
 /// What kind of thing a symbol is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
@@ -95,6 +99,12 @@ pub struct FileSymbols {
     pub references: Vec<Reference>,
     /// The skript-reflect syntax this file defines, in source order.
     pub syntax: Vec<crate::syntax::SyntaxDefinition>,
+    /// Doc comments, keyed by the documented declaration's
+    /// `selection_range`; see [`FileSymbols::doc_for`].
+    ///
+    /// Kept beside the tree rather than on [`Symbol`], so the symbol tree
+    /// stays what the outline renders and only documentable kinds pay for it.
+    pub docs: Vec<(Range, DocComment)>,
 }
 
 impl FileSymbols {
@@ -116,6 +126,15 @@ impl FileSymbols {
         self.flat()
             .into_iter()
             .find(|symbol| symbol.selection_range.touches(position))
+    }
+
+    /// The doc comment of the declaration whose name is `selection_range`:
+    /// a function, ClassySK method, command or skript-reflect definition.
+    pub fn doc_for(&self, selection_range: Range) -> Option<&DocComment> {
+        self.docs
+            .iter()
+            .find(|(range, _)| *range == selection_range)
+            .map(|(_, doc)| doc)
     }
 
     /// The reference the cursor is on, if any.
@@ -166,7 +185,39 @@ pub fn extract(tree: &Tree, source: &str) -> FileSymbols {
     }
 
     collect_references(root, source, &mut out);
+    out.docs = collect_docs(&out.symbols, source);
     out
+}
+
+/// The doc comments above every documentable declaration.
+///
+/// Read from the text rather than the tree: comment lines are their own
+/// top-level nodes (comments are not `extras`), and inside a class they would
+/// be siblings of the method, so the line above is the simpler question.
+fn collect_docs(symbols: &[Symbol], source: &str) -> Vec<(Range, DocComment)> {
+    let documented = |symbol: &&Symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Function
+                | SymbolKind::LocalFunction
+                | SymbolKind::Command
+                | SymbolKind::Syntax
+                | SymbolKind::Method
+        )
+    };
+    let methods = symbols
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Class)
+        .flat_map(|class| &class.children);
+    let lines: Vec<&str> = source.lines().collect();
+    symbols
+        .iter()
+        .chain(methods)
+        .filter(documented)
+        .filter_map(|symbol| {
+            doc::above(&lines, symbol.range.start.line).map(|found| (symbol.selection_range, found))
+        })
+        .collect()
 }
 
 fn text_of(node: Node<'_>, source: &str) -> String {
@@ -648,9 +699,10 @@ fn option_entries(node: Node<'_>, source: &str) -> Vec<Symbol> {
         symbols.push(Symbol {
             kind: SymbolKind::Option,
             name: text_of(key, source),
-            detail: child
-                .child_by_field_name("value")
-                .map(|value| text_of(value, source))
+            // The whole value: it arrives as a run of `value` children, and
+            // the first alone cut `&6[Shop]` down to `&6`.
+            detail: field_source(child, "value", source)
+                .map(|value| value.trim().to_string())
                 .unwrap_or_default(),
             range: child.into(),
             selection_range: key.into(),
@@ -864,6 +916,49 @@ mod tests {
         assert!(function.detail.contains(":: item"));
     }
 
+    /// Functions, methods, commands and custom syntax are all documented by
+    /// the comment directly above them, and nothing else is.
+    #[test]
+    fn attaches_doc_comments_to_documentable_declarations() {
+        let found = symbols(concat!(
+            "# Gives a kit.\n",
+            "# @param p who\n",
+            "function kit(p: player):\n",
+            "\tstop\n",
+            "# A join handler.\n",
+            "on join:\n",
+            "\tstop\n",
+            "# Goes home.\n",
+            "command /home:\n",
+            "\ttrigger:\n",
+            "\t\tstop\n",
+            "class Wallet:\n",
+            "\t# Empties it.\n",
+            "\tpublic reset():\n",
+            "\t\tstop\n",
+            "# Says hi.\n",
+            "effect greet %player%:\n",
+            "\ttrigger:\n",
+            "\t\tstop\n",
+        ));
+        let described = |name: &str| {
+            let symbol = found
+                .flat()
+                .into_iter()
+                .find(|symbol| symbol.name == name)
+                .unwrap_or_else(|| panic!("no symbol {name}"));
+            found
+                .doc_for(symbol.selection_range)
+                .map(|doc| doc.description.clone())
+        };
+        assert_eq!(described("kit").as_deref(), Some("Gives a kit."));
+        assert_eq!(described("home").as_deref(), Some("Goes home."));
+        assert_eq!(described("reset").as_deref(), Some("Empties it."));
+        assert_eq!(described("greet %player%").as_deref(), Some("Says hi."));
+        assert_eq!(described("join"), None);
+        assert_eq!(found.docs.len(), 4);
+    }
+
     const WALLET: &str = concat!(
         "class Wallet:\n",
         "\tprivate balance: number = 0\n",
@@ -1007,10 +1102,11 @@ mod tests {
 
     #[test]
     fn finds_options_and_their_values() {
-        let found = symbols("options:\n\tprefix: &6[Server]\n");
+        let found = symbols("options:\n\tprefix: &6[Server] of the year\n");
         let option = &found.symbols[0].children[0];
         assert_eq!(option.kind, SymbolKind::Option);
         assert_eq!(option.name, "prefix");
+        assert_eq!(option.detail, "&6[Server] of the year");
     }
 
     #[test]

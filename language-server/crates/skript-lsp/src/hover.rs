@@ -1,6 +1,7 @@
 //! `textDocument/hover`.
 
-use skript_index::{Document, Range, SymbolKind, Workspace};
+use skript_index::symbols::DocComment;
+use skript_index::{Document, Range, Symbol, SymbolKind, Workspace};
 use tower_lsp::lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 
 use crate::completion::{in_command_entry_position, local_scope};
@@ -114,6 +115,15 @@ pub fn prepare(state: &State, params: &HoverParams) -> Answer {
         if !symbol.detail.is_empty() {
             text.push_str(&format!("  \n`{}`", symbol.detail));
         }
+        text.push_str(&documentation(document, symbol));
+        // A parameter in the signature carries its `@param` text.
+        if let Some(note) = owner_of(document, symbol)
+            .and_then(|owner| document.symbols().doc_for(owner.selection_range))
+            .and_then(|doc| doc.param(&symbol.name))
+            .filter(|note| !note.is_empty())
+        {
+            text.push_str(&format!("\n\n{note}"));
+        }
         return Answer::Ready(Some(markdown_hover(text, range(symbol.selection_range))));
     }
 
@@ -207,8 +217,7 @@ fn catalog_hover(state: &State, document: &Document, position: skript_index::Pos
         let Some(entry) = catalog.entry(id) else {
             return Answer::Ready(None);
         };
-        let mut text = crate::custom_syntax::card(id.category, entry);
-        text.push_str(&defined_at(state, document, id));
+        let text = workspace_card(state, document, id, entry);
         return Answer::Ready(Some(markdown_hover(text, Some(span))));
     }
     let Some(mut text) = catalog.hover(id) else {
@@ -254,9 +263,200 @@ fn definition_hover(
     let (id, entry) = catalog
         .workspace_entries()
         .find(|(_, entry)| entry.id == key)?;
-    let mut text = crate::custom_syntax::card(id.category, entry);
-    text.push_str(&defined_at(state, document, id));
+    let text = workspace_card(state, document, id, entry);
     Some((text, definition.selection_range))
+}
+
+/// The card for one of the project's own syntax entries: its doc comment,
+/// patterns, and where it is defined.
+///
+/// The catalog entry's description already holds the comment above the
+/// definition, joined into one line with its tags still in it (`@since 1.2`
+/// read as prose). When the definition has a doc comment, that line is swapped
+/// for the parsed description and the tags are rendered after the card.
+fn workspace_card(
+    state: &State,
+    document: &Document,
+    id: skript_docs::EntryId,
+    entry: &skript_docs::Entry,
+) -> String {
+    let documented = state.catalog.as_ref().and_then(|catalog| {
+        crate::custom_syntax::definitions_of(&state.workspace, catalog, id, document.uri())
+            .into_iter()
+            .find_map(|(target, definition)| {
+                let doc = target.symbols().doc_for(definition.selection_range)?;
+                Some((doc, definition.comment.join(" ")))
+            })
+    });
+    let Some((doc, raw)) = documented else {
+        let mut text = crate::custom_syntax::card(id.category, entry);
+        text.push_str(&defined_at(state, document, id));
+        return text;
+    };
+    let mut shown = entry.clone();
+    if shown.description.first() == Some(&raw) {
+        shown.description.remove(0);
+    }
+    if !doc.description.is_empty() {
+        shown.description.insert(0, doc.description.clone());
+    }
+    let mut text = crate::custom_syntax::card(id.category, &shown);
+    let tags = DocComment {
+        description: String::new(),
+        ..doc.clone()
+    };
+    let rendered = doc_markdown(&tags, None, None);
+    if !rendered.is_empty() {
+        text.push_str(&format!("\n\n{rendered}"));
+    }
+    text.push_str(&defined_at(state, document, id));
+    text
+}
+
+/// The rendered doc comment of `symbol`, a function, method or command,
+/// with a leading blank line; empty when it has none.
+fn documentation(document: &Document, symbol: &Symbol) -> String {
+    let Some(doc) = document.symbols().doc_for(symbol.selection_range) else {
+        return String::new();
+    };
+    let parameters = (symbol.kind != SymbolKind::Command).then_some(symbol.children.as_slice());
+    let rendered = doc_markdown(doc, parameters, return_type(&symbol.detail));
+    if rendered.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{rendered}")
+    }
+}
+
+/// The documentation of the project function a completion item offers, for
+/// `completionItem/resolve`.
+///
+/// Those items carry no `data` (it is the catalog's index), so the function is
+/// found again by name and signature, both of which the item shows. The
+/// signature picks between same-named local functions in different scripts.
+pub fn declared_function_documentation(
+    workspace: &Workspace,
+    item: &tower_lsp::lsp_types::CompletionItem,
+) -> Option<String> {
+    use tower_lsp::lsp_types::CompletionItemKind;
+    let from_project = item
+        .label_details
+        .as_ref()
+        .and_then(|details| details.description.as_deref())
+        == Some("this project");
+    if item.kind != Some(CompletionItemKind::FUNCTION) || !from_project {
+        return None;
+    }
+    let detail = item.detail.as_deref().unwrap_or_default();
+    workspace.documents().find_map(|document| {
+        let function = document.symbols().symbols.iter().find(|symbol| {
+            symbol.kind.is_function() && symbol.name == item.label && symbol.detail == detail
+        })?;
+        let rendered = documentation(document, function);
+        (!rendered.is_empty()).then(|| rendered.trim_start().to_string())
+    })
+}
+
+/// `boolean` from a signature `(p: player) :: boolean`.
+fn return_type(signature: &str) -> Option<&str> {
+    signature
+        .rsplit_once("::")
+        .map(|(_, ty)| ty.trim())
+        .filter(|ty| !ty.is_empty())
+}
+
+/// The function or method whose parameter `parameter` is.
+fn owner_of<'d>(document: &'d Document, parameter: &Symbol) -> Option<&'d Symbol> {
+    if parameter.kind != SymbolKind::LocalVariable {
+        return None;
+    }
+    document.symbols().flat().into_iter().find(|symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Function | SymbolKind::LocalFunction | SymbolKind::Method
+        ) && symbol
+            .children
+            .iter()
+            .any(|child| std::ptr::eq(child, parameter))
+    })
+}
+
+/// Markdown for a doc comment.
+///
+/// `parameters` are the declaration's own parameter symbols, so each
+/// `@param` is shown with the type the signature declares, in signature
+/// order, and an `@param` naming none of them is left out (the
+/// `doc-unknown-param` hint reports it). `None` is for declarations whose
+/// arguments have no names, a command's or a custom syntax's, where every
+/// `@param` is shown as written.
+pub fn doc_markdown(
+    doc: &DocComment,
+    parameters: Option<&[Symbol]>,
+    returns: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    // First, as a deprecation is the one thing a caller must not miss.
+    match doc.deprecated.as_deref() {
+        Some("") => parts.push("**Deprecated.**".to_string()),
+        Some(note) => parts.push(format!("**Deprecated:** {note}")),
+        None => {}
+    }
+    if !doc.description.is_empty() {
+        parts.push(doc.description.clone());
+    }
+    let lines: Vec<String> = match parameters {
+        _ if doc.params.is_empty() => Vec::new(),
+        Some(parameters) => parameters
+            .iter()
+            .map(|parameter| {
+                let ty = parameter.detail.trim();
+                let label = if ty.is_empty() {
+                    format!("`{}`", parameter.name)
+                } else {
+                    format!("`{}: {ty}`", parameter.name)
+                };
+                match doc.param(&parameter.name).filter(|text| !text.is_empty()) {
+                    Some(text) => format!("- {label}: {text}"),
+                    None => format!("- {label}"),
+                }
+            })
+            .collect(),
+        None => doc
+            .params
+            .iter()
+            .map(|param| match param.text.as_str() {
+                "" => format!("- `{}`", param.name),
+                text => format!("- `{}`: {text}", param.name),
+            })
+            .collect(),
+    };
+    if !lines.is_empty() {
+        parts.push(format!("**Parameters**\n{}", lines.join("\n")));
+    }
+    match (doc.returns.as_deref(), returns) {
+        (Some(text), Some(ty)) if !text.is_empty() => {
+            parts.push(format!("**Returns** `{ty}`: {text}"))
+        }
+        (Some(text), None) if !text.is_empty() => parts.push(format!("**Returns:** {text}")),
+        _ => {}
+    }
+    if let Some(since) = doc.since.as_deref().filter(|since| !since.is_empty()) {
+        parts.push(format!("**Since** {since}"));
+    }
+    if !doc.examples.is_empty() {
+        let blocks: Vec<String> = doc
+            .examples
+            .iter()
+            .map(|example| format!("```skript\n{example}\n```"))
+            .collect();
+        let title = if blocks.len() == 1 {
+            "Example"
+        } else {
+            "Examples"
+        };
+        parts.push(format!("**{title}**\n\n{}", blocks.join("\n\n")));
+    }
+    parts.join("\n\n")
 }
 
 /// "Defined in `file.sk`, line 3." for each place the project syntax `id` is
@@ -422,21 +622,18 @@ fn parameter_note(document: &Document, name: &str, first: u32, last: u32) -> Str
     }) else {
         return String::new();
     };
-    let owner = flat
-        .iter()
-        .find(|symbol| {
-            matches!(
-                symbol.kind,
-                SymbolKind::Function | SymbolKind::LocalFunction | SymbolKind::Method
-            ) && symbol
-                .children
-                .iter()
-                .any(|child| std::ptr::eq(child, parameter))
-        })
+    let owner = owner_of(document, parameter);
+    let note = owner
+        .and_then(|owner| document.symbols().doc_for(owner.selection_range))
+        .and_then(|doc| doc.param(&parameter.name))
+        .filter(|note| !note.is_empty())
+        .map(|note| format!(": {note}"))
+        .unwrap_or_else(|| ".".into());
+    let owner = owner
         .map(|owner| format!(" of `{}`", owner.name))
         .unwrap_or_default();
     format!(
-        "\n\nParameter `{}: {}`{owner}.",
+        "\n\nParameter `{}: {}`{owner}{note}",
         parameter.name,
         parameter.detail.trim()
     )
@@ -524,23 +721,31 @@ pub fn reference_hover(
     ) {
         return None;
     }
-    let mut lines = Vec::new();
+    let mut cards = Vec::new();
     for (document, member) in member_definitions(workspace, from, reference) {
         let class = enclosing_class(document, member.range)
             .map(|class| format!("{}::", class.name))
             .unwrap_or_default();
         // A field is shown as it is used, `Req::extra`, with its type beside
         // it; the declaration's `extra: integer` read as a typo for `::`.
-        let line = if member.kind == SymbolKind::Field {
+        let mut card = if member.kind == SymbolKind::Field {
             format!("`{class}{}` · {}", member.name, member.detail.trim())
         } else {
             format!("`{class}{}{}`", member.name, member.detail)
         };
-        if !lines.contains(&line) {
-            lines.push(line);
+        card.push_str(&documentation(document, member));
+        if !cards.contains(&card) {
+            cards.push(card);
         }
     }
-    (!lines.is_empty()).then(|| lines.join("  \n"))
+    // One line per declaration reads as a list; once any carries its
+    // documentation, a rule keeps each one's text with its own signature.
+    let separator = if cards.iter().any(|card| card.contains('\n')) {
+        "\n\n---\n\n"
+    } else {
+        "  \n"
+    };
+    (!cards.is_empty()).then(|| cards.join(separator))
 }
 
 #[cfg(test)]
@@ -667,6 +872,138 @@ mod tests {
         let state = state_with_custom_syntax();
         let text = hover_text(&state, "file:///t.sk", 0, 10).expect("a hover");
         assert!(text.starts_with("**[the] greet %player%**"), "{text}");
+    }
+
+    const DOCUMENTED: &str = concat!(
+        "# Gives a welcome kit.\n",
+        "# @param p who gets it\n",
+        "# @param stale renamed long ago\n",
+        "# @return whether it fit\n",
+        "# @since 1.2\n",
+        "# @example kit(player, 1)\n",
+        "function kit(p: player, n: number) :: boolean:\n",
+        "\tsend \"hi\" to {_p}\n",
+        "\treturn true\n",
+        "on join:\n",
+        "\tkit(player, 1)\n",
+    );
+
+    const KIT_DOCS: &str = concat!(
+        "Gives a welcome kit.\n\n",
+        "**Parameters**\n",
+        "- `p: player`: who gets it\n",
+        "- `n: number`\n\n",
+        "**Returns** `boolean`: whether it fit\n\n",
+        "**Since** 1.2\n\n",
+        "**Example**\n\n",
+        "```skript\nkit(player, 1)\n```",
+    );
+
+    /// The declaration and every call show the same documentation; the stale
+    /// `@param` is left out, since it names nothing in the signature.
+    #[test]
+    fn a_documented_function_hovers_with_its_docs_at_declaration_and_call() {
+        let state = state_with(DOCUMENTED);
+        let declaration = hover_text(&state, "file:///t.sk", 6, 10).expect("a hover");
+        assert_eq!(
+            declaration,
+            format!("**kit**  \n`(p: player, n: number) :: boolean`\n\n{KIT_DOCS}")
+        );
+        let call = hover_text(&state, "file:///t.sk", 10, 2).expect("a hover");
+        assert_eq!(
+            call,
+            format!("`kit(p: player, n: number) :: boolean`\n\n{KIT_DOCS}")
+        );
+    }
+
+    #[test]
+    fn a_parameter_carries_its_at_param_text() {
+        let state = state_with(DOCUMENTED);
+        let text = hover_text(&state, "file:///t.sk", 7, 16).expect("a hover");
+        assert!(
+            text.contains("Parameter `p: player` of `kit`: who gets it"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_deprecated_method_says_so_first() {
+        let state = state_with(concat!(
+            "class Wallet:\n",
+            "\t#d Empties the wallet.\n",
+            "\t#ddep use clear() instead\n",
+            "\tpublic reset():\n",
+            "\t\tstop\n",
+            "on join:\n",
+            "\tWallet::reset()\n",
+        ));
+        let text = hover_text(&state, "file:///t.sk", 6, 11).expect("a hover");
+        assert_eq!(
+            text,
+            "`Wallet::reset()`\n\n**Deprecated:** use clear() instead\n\nEmpties the wallet."
+        );
+    }
+
+    #[test]
+    fn a_command_lists_its_params_as_written() {
+        let state = state_with(concat!(
+            "# Teleports home.\n",
+            "# @param name which home\n",
+            "command /home <text>:\n",
+            "\ttrigger:\n",
+            "\t\tstop\n",
+        ));
+        let text = hover_text(&state, "file:///t.sk", 2, 10).expect("a hover");
+        assert!(
+            text.ends_with("Teleports home.\n\n**Parameters**\n- `name`: which home"),
+            "{text}"
+        );
+    }
+
+    /// The comment's tags are parsed out of the custom syntax card's prose.
+    #[test]
+    fn a_documented_custom_effect_renders_its_tags() {
+        let mut state = state_with(concat!(
+            "# Greets someone.\n",
+            "# @since 2.0\n",
+            "effect [the] greet %player%:\n",
+            "\ttrigger:\n",
+            "\t\tstop\n",
+            "on join:\n",
+            "\tgreet player\n",
+        ));
+        state.catalog = Some(skript_docs::Catalog::build(skript_docs::fallback_docs()));
+        crate::custom_syntax::sync(&mut state);
+        let text = hover_text(&state, "file:///t.sk", 6, 2).expect("a hover");
+        assert!(text.contains("Greets someone."), "{text}");
+        assert!(!text.contains("@since"), "{text}");
+        assert!(text.contains("**Since** 2.0"), "{text}");
+        assert!(text.contains("Defined in `t.sk`, line 3."), "{text}");
+    }
+
+    #[test]
+    fn completion_resolve_documents_a_project_function() {
+        use tower_lsp::lsp_types::{
+            CompletionItem, CompletionItemKind, CompletionItemLabelDetails,
+        };
+        let state = state_with(DOCUMENTED);
+        let item = CompletionItem {
+            label: "kit".into(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("(p: player, n: number) :: boolean".into()),
+            label_details: Some(CompletionItemLabelDetails {
+                detail: None,
+                description: Some("this project".into()),
+            }),
+            ..Default::default()
+        };
+        let resolved = crate::completion::completion_resolve(&state, item);
+        let Some(tower_lsp::lsp_types::Documentation::MarkupContent(markup)) =
+            resolved.documentation
+        else {
+            panic!("no documentation");
+        };
+        assert_eq!(markup.value, KIT_DOCS);
     }
 
     #[test]

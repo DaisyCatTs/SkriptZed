@@ -88,55 +88,77 @@ fn arity_of(parameters: &[String]) -> Option<Arity> {
     })
 }
 
-/// Every declaration visible from `document`, by name. `None` marks a name
-/// with at least one declaration too unclear to count against.
-fn declarations(
-    document: &Document,
-    workspace: &Workspace,
-    catalog: Option<&Catalog>,
-) -> HashMap<String, Option<Vec<Arity>>> {
-    let mut found: HashMap<String, Option<Vec<Arity>>> = HashMap::new();
-    let mut record = |name: &str, arity: Option<Arity>| {
-        let slot = found
-            .entry(name.to_string())
-            .or_insert_with(|| Some(Vec::new()));
-        match (slot.as_mut(), arity) {
-            (Some(list), Some(arity)) => list.push(arity),
-            _ => *slot = None,
-        }
-    };
+/// Every declaration any file can call, by name: the catalog's functions and
+/// every script's global ones. `None` marks a name with at least one
+/// declaration too unclear to count against.
+///
+/// Built once and shared by every file checked against the same project, so
+/// rechecking hundreds of closed files does not rebuild it per file.
+pub(super) struct Shared(HashMap<String, Option<Vec<Arity>>>);
 
-    if let Some(catalog) = catalog {
-        for entry in catalog.docs().entries(Category::Function) {
-            let arity = match entry.patterns.as_slice() {
-                [pattern] => arity_of(&calls::signature_parameters(pattern)),
-                _ => None,
-            };
-            record(&entry.name, arity);
-        }
+fn record(found: &mut HashMap<String, Option<Vec<Arity>>>, name: &str, arity: Option<Arity>) {
+    let slot = found
+        .entry(name.to_string())
+        .or_insert_with(|| Some(Vec::new()));
+    match (slot.as_mut(), arity) {
+        (Some(list), Some(arity)) => list.push(arity),
+        _ => *slot = None,
     }
+}
 
-    for other in workspace.documents() {
-        let same_file = other.uri() == document.uri();
-        for symbol in other.symbols().flat() {
-            if !symbol.kind.is_function()
-                || (symbol.kind == SymbolKind::LocalFunction && !same_file)
-            {
-                continue;
+impl Shared {
+    pub(super) fn new(workspace: &Workspace, catalog: Option<&Catalog>) -> Self {
+        let mut found = HashMap::new();
+        if let Some(catalog) = catalog {
+            for entry in catalog.docs().entries(Category::Function) {
+                let arity = match entry.patterns.as_slice() {
+                    [pattern] => arity_of(&calls::signature_parameters(pattern)),
+                    _ => None,
+                };
+                record(&mut found, &entry.name, arity);
             }
-            // `function f:` with no parentheses, or a signature spliced in
-            // from an option, says nothing reliable about its parameters.
-            let line = other.line(symbol.selection_range.start.line);
-            let after = line
-                .get(symbol.selection_range.end.character as usize..)
-                .unwrap_or("");
-            let arity = (after.trim_start().starts_with('(') && !symbol.detail.contains("{@"))
-                .then(|| arity_of(&calls::signature_parameters(&symbol.detail)))
-                .flatten();
-            record(&symbol.name, arity);
+        }
+        for other in workspace.documents() {
+            for symbol in other.symbols().flat() {
+                if symbol.kind == SymbolKind::Function {
+                    record(&mut found, &symbol.name, symbol_arity(other, symbol));
+                }
+            }
+        }
+        Self(found)
+    }
+
+    /// What a call to `name` from `document` can mean, its own local
+    /// functions included; `None` when undeclared or unclear.
+    fn lookup(&self, document: &Document, name: &str) -> Option<Vec<Arity>> {
+        let mut local = HashMap::new();
+        for symbol in document.symbols().flat() {
+            if symbol.kind == SymbolKind::LocalFunction && symbol.name == name {
+                record(&mut local, name, symbol_arity(document, symbol));
+            }
+        }
+        match (self.0.get(name), local.remove(name)) {
+            (None, None) | (Some(None), _) | (_, Some(None)) => None,
+            (global, local) => {
+                let mut list = global.cloned().flatten().unwrap_or_default();
+                list.extend(local.flatten().unwrap_or_default());
+                Some(list)
+            }
         }
     }
-    found
+}
+
+/// A script function's arity. `function f:` with no parentheses, or a
+/// signature spliced in from an option, says nothing reliable about its
+/// parameters.
+fn symbol_arity(document: &Document, symbol: &skript_index::Symbol) -> Option<Arity> {
+    let line = document.line(symbol.selection_range.start.line);
+    let after = line
+        .get(symbol.selection_range.end.character as usize..)
+        .unwrap_or("");
+    (after.trim_start().starts_with('(') && !symbol.detail.contains("{@"))
+        .then(|| arity_of(&calls::signature_parameters(&symbol.detail)))
+        .flatten()
 }
 
 /// Whether `text` holds the word `and` or `or` outside strings, variable
@@ -208,8 +230,26 @@ pub(super) fn check(
     catalog: Option<&Catalog>,
     out: &mut Vec<Diagnostic>,
 ) {
-    let mut declared: Option<HashMap<String, Option<Vec<Arity>>>> = None;
+    // Built lazily: most files call no function at all.
+    let mut shared: Option<Shared> = None;
+    let mut lookup = |name: &str| {
+        shared
+            .get_or_insert_with(|| Shared::new(workspace, catalog))
+            .lookup(document, name)
+    };
+    check_calls(document, &mut lookup, out);
+}
 
+/// As [`check`], against declarations built once for many files.
+pub(super) fn check_shared(document: &Document, shared: &Shared, out: &mut Vec<Diagnostic>) {
+    check_calls(document, &mut |name| shared.lookup(document, name), out);
+}
+
+fn check_calls(
+    document: &Document,
+    lookup: &mut dyn FnMut(&str) -> Option<Vec<Arity>>,
+    out: &mut Vec<Diagnostic>,
+) {
     for reference in &document.symbols().references {
         if reference.kind != SymbolKind::Function || super::preceded_by_new(document, reference) {
             continue;
@@ -222,9 +262,7 @@ pub(super) fn check(
         let Some((count, spreads_a_list)) = argument_count(line, open) else {
             continue;
         };
-        // Built lazily: most files call no function at all.
-        let declared = declared.get_or_insert_with(|| declarations(document, workspace, catalog));
-        let Some(Some(arities)) = declared.get(reference.name.as_str()) else {
+        let Some(arities) = lookup(reference.name.as_str()) else {
             continue;
         };
         if arities.is_empty()
@@ -240,7 +278,7 @@ pub(super) fn check(
         if too_few && spreads_a_list {
             continue;
         }
-        out.push(arity_diagnostic(reference, arities, count));
+        out.push(arity_diagnostic(reference, &arities, count));
     }
 }
 

@@ -37,6 +37,17 @@ pub struct Settings {
     /// Report locals read but never set, or set but never read. On by
     /// default; heuristic, so it is the one most likely to be unwanted.
     pub local_variable_diagnostics: bool,
+    /// Report `player`, `event-<type>`, `attacker` and `victim` where the
+    /// trigger has none, such as inside a function. On by default; it rests
+    /// on the database's description of each event.
+    pub event_value_diagnostics: bool,
+    /// Report an `on …` header that is a typo of a known event. On by
+    /// default, and only active once every installed addon's syntax is known.
+    pub unknown_event_diagnostics: bool,
+    /// Report syntax newer than the server's Skript, when its version is
+    /// known from `Skript.jar` or `skriptVersion`. Off by default: syntax a
+    /// later Skript rewrote (Play Effect in 2.14) reads as new.
+    pub newer_syntax_diagnostics: bool,
     /// Let the formatter put a blank line under a multi-line structure that
     /// runs straight into the next. It never removes one.
     pub format_blank_lines: bool,
@@ -82,6 +93,9 @@ impl Default for Settings {
             unknown_syntax_diagnostics: false,
             deprecated_syntax_diagnostics: true,
             local_variable_diagnostics: true,
+            event_value_diagnostics: true,
+            unknown_event_diagnostics: true,
+            newer_syntax_diagnostics: false,
             format_blank_lines: true,
             addons: AddonSetting::default(),
             server_path: None,
@@ -129,6 +143,9 @@ pub struct Features {
     /// Every diagnostic this server reports itself. The analyzer and RCON
     /// findings follow their own blocks.
     pub diagnostics: bool,
+    /// Cross-file errors and duplicates for scripts that are not open, so
+    /// the project diagnostics panel shows a caller an edit broke.
+    pub project_diagnostics: bool,
 }
 
 impl Default for Features {
@@ -150,6 +167,7 @@ impl Default for Features {
             call_hierarchy: true,
             symbols: true,
             diagnostics: true,
+            project_diagnostics: true,
         }
     }
 }
@@ -293,6 +311,9 @@ const SETTING_KEYS: &[&str] = &[
     "unknownSyntaxDiagnostics",
     "deprecatedSyntaxDiagnostics",
     "localVariableDiagnostics",
+    "eventValueDiagnostics",
+    "unknownEventDiagnostics",
+    "newerSyntaxDiagnostics",
     "formatBlankLines",
     "addons",
     "serverPath",
@@ -335,6 +356,7 @@ const FEATURE_KEYS: &[&str] = &[
     "callHierarchy",
     "symbols",
     "diagnostics",
+    "projectDiagnostics",
 ];
 
 /// Keeps each entry of `object` that `T` accepts on its own, and describes
@@ -484,9 +506,15 @@ pub fn apply_settings(state: &mut State, settings: &Settings) {
         unknown_syntax: settings.unknown_syntax_diagnostics,
         deprecated_syntax: settings.deprecated_syntax_diagnostics,
         local_variables: settings.local_variable_diagnostics,
-        // Not a setting: reapplying configuration must not make the server
-        // forget it has already read the project.
+        event_values: settings.event_value_diagnostics,
+        unknown_events: settings.unknown_event_diagnostics,
+        newer_syntax: settings.newer_syntax_diagnostics,
+        // Not settings: reapplying configuration must not make the server
+        // forget it has already read the project, and the other two describe
+        // what loaded, which `publish` works out each time.
         project_indexed: state.diagnostics.project_indexed,
+        events_known: state.diagnostics.events_known,
+        target_version_known: state.diagnostics.target_version_known,
     };
     // Changed analyzer settings take effect on the next save: the running
     // process is dropped, and an earlier setup failure is forgiven.
@@ -752,6 +780,28 @@ mod tests {
             state.diagnostics.project_indexed,
             "reapplying settings must not forget the project was read"
         );
+    }
+
+    #[test]
+    fn the_event_switches_reach_the_diagnostics_and_keep_what_loaded() {
+        let (settings, problems) = parse_settings(&serde_json::json!({
+            "eventValueDiagnostics": false,
+            "unknownEventDiagnostics": false,
+            "newerSyntaxDiagnostics": true,
+        }));
+        assert!(problems.is_empty(), "{problems:?}");
+        let mut state = State::default();
+        state.diagnostics.events_known = true;
+        state.diagnostics.target_version_known = true;
+        apply_settings(&mut state, &settings.unwrap());
+        assert!(!state.diagnostics.event_values);
+        assert!(!state.diagnostics.unknown_events);
+        assert!(state.diagnostics.newer_syntax);
+        assert!(!Settings::default().newer_syntax_diagnostics);
+        assert!(state.diagnostics.events_known);
+        assert!(state.diagnostics.target_version_known);
+        assert!(Settings::default().event_value_diagnostics);
+        assert!(Settings::default().unknown_event_diagnostics);
     }
 
     #[test]

@@ -26,6 +26,75 @@ not belong in this file. Refactors, test additions and CI changes live in
   replaces only the word under the cursor, never the statement, and a word
   that already spells out a value (`kill player`) opens no popup, so Enter
   still starts a new line.
+- **Doc comments.** The `#` lines directly above a function, command,
+  ClassySK method or skript-reflect definition are its documentation, shown
+  when you hover the declaration or any call, in completion, and in argument
+  hints, where each parameter carries its own text. Both conventions other
+  Skript editors use are read, so a documented file moves between editors
+  unchanged: `@param`, `@return`, `@deprecated`, `@since` and `@example`, and
+  the `#d`, `#dp`, `#dr`, `#dex` and `#ddep` family. A blank line detaches a
+  comment, and a `###` block counts when it closes directly above. A
+  `@param` naming no parameter is hinted, and a call to a `@deprecated`
+  function is struck through with the reason (switched off with the other
+  deprecation warnings by `deprecatedSyntaxDiagnostics`).
+- **Option values inline.** With inlay hints on, `{@prefix}` is followed by
+  the value the script's `options:` block gives it, `= "&6[Shop]"`, cut short
+  past 30 characters.
+- **"There's no player in a function event."** Skript's most common load
+  error is now a warning as you type, in Skript's own words: `player`,
+  `event-player`, `event-entity`, `event-block`, `attacker` and `victim`
+  inside a function, or in an event whose documented values can never supply
+  them (`every 5 seconds`, `on world load`). It stays silent wherever Skript
+  might accept the line: commands, `on load` (whose command sender passes
+  for a player), events with no documented values, addon events, sections
+  that run their body in an event of their own, and slots where `player`
+  could be read as an entity type. `eventValueDiagnostics: false` turns it
+  off.
+- **Empty sections.** A line ending in `:` with nothing under it gets
+  Skript's own "Empty configuration section!" warning, following Skript's
+  reader exactly: a comment-only body counts as empty, and a `#-#` line
+  opens no section.
+- **Unreachable code.** Statements after a `stop` or a `return` in the same
+  block are faded and warned about, as Skript does on load. A script that
+  suppresses Skript's unreachable code warnings is left alone.
+- **Mistyped events.** `on jion:` is reported as a structure Skript cannot
+  understand, with a quick fix to change it to `on join`. Only near-misses
+  of a known event are reported, and only once every addon in your
+  `plugins/` folder has its syntax loaded, so an addon's event is never
+  mistaken for a typo. `unknownEventDiagnostics: false` turns it off.
+- **Syntax newer than your server, opt-in.** With
+  `newerSyntaxDiagnostics: true` and the Skript version known, from the
+  detected `Skript.jar` or the `skriptVersion` setting, a line whose syntax
+  arrived in a later Skript is warned about with the version it needs. Older
+  syntax that also fits the line keeps it quiet. Off by default because
+  syntax a later Skript rewrote (Play Effect in 2.14) still reads as new.
+- **`loop-` completes the loop's own values.** Inside `loop all players:`,
+  typing `loop-` offers `loop-player`, `loop-entity`, `loop-value` and
+  `loop-iteration`; a list variable adds `loop-index`, `loop 10 times`
+  offers `loop-number`. Nested loops are numbered exactly where Skript
+  demands it (`loop-value-1`, `loop-value-2`) and nowhere else. Hovering a
+  `loop-…` name says which loop it refers to and what type it is, or that it
+  matches several loops, which Skript rejects.
+- **Every listed value in argument completion.** A slot whose type lists its
+  values offers them, ranked by what you typed: damage causes, biomes,
+  potion effect types, enchantments (also for `%enchantment type%` slots,
+  as in `sharpness 5`), villager professions, game rules, teleport causes
+  and some forty more. Item and entity types stay out: their names are
+  open-ended aliases.
+- **Diagnostics for scripts you do not have open.** When a save, an edit, a
+  new or deleted file or a `git pull` changes what the project declares, the
+  closed scripts that call or redeclare it are rechecked for unknown
+  functions, wrong argument counts and duplicates, so the project
+  diagnostics panel shows a caller you just broke, and clears it once fixed.
+  Only scripts inside the workspace are reported. Measured at about 12 ms for
+  a full pass over 300 scripts, so it is on by default;
+  `features.projectDiagnostics: false` turns it off.
+- **Duplicates across scripts.** Two global functions with the same name and
+  the same parameter types (an overload by type is fine), two commands with
+  the same name, or two skript-reflect definitions with the same pattern are
+  warned about in both places, each linking to the other.
+- **TODO, FIXME, XXX and NOTE stand out in comments**, the tag word alone,
+  with semantic tokens on.
 
 ### Fixed
 
@@ -40,6 +109,8 @@ not belong in this file. Refactors, test additions and CI changes live in
 - **Suggestions rank the syntax you are typing first.** `tel` offers Teleport
   before Display Teleport Duration, and `cancel ev` offers Cancel Event
   before `event-player`.
+- **An option's value was cut short.** Completion and hover showed
+  `prefix: &6[Shop] of the year` as `&6`; they now show the whole value.
 
 ## [0.3.0] - 2026-11-02
 

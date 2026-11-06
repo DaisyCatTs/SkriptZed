@@ -1,0 +1,68 @@
+###
+Doc comments, and option values shown where they are used.
+
+The run of # lines directly above a function, command, ClassySK method or
+skript-reflect definition is its documentation. Two styles are read, so a
+file documented in another editor reads the same here:
+
+  @param <name> <text>, @return, @deprecated, @since, @example
+  #d <text>, #dp <name> <text>, #dr, #dex <code>, #ddep <reason>
+
+A blank line between the comment and the declaration detaches it, as the
+header below shows. This block is prose, not documentation: a ### block
+only counts when its closing ### sits directly above a declaration.
+
+Two hints in this file are on purpose: the stale @param on welcomeKit, and
+the struck-through call to oldKit. Nothing else should be reported.
+###
+
+options:
+	prefix: &8[&6Kits&8]&r
+	cooldown: 10 minutes
+
+# A section banner, separated by a blank line: not anyone's documentation.
+
+# Gives a player the starter kit and tells them about it.
+#
+# @param p the player who receives the kit
+# @param loud whether to announce it to everyone
+# @param amount renamed to `count` long ago: this line is hinted
+# @return whether the kit fitted in their inventory
+# @since 1.2
+# @example
+#   if welcomeKit(player, false) is false:
+#       send "Make some room first." to player
+function welcomeKit(p: player, loud: boolean = false) :: boolean:
+	give {_p} a stone sword and 16 bread
+	send "{@prefix} Enjoy your kit." to {_p}
+	if {_loud} is true:
+		broadcast "{@prefix} %{_p}% got the starter kit."
+	return true
+
+#d Rolls a drop chance, in the #d style from another Skript extension.
+#dp chance percent chance of a drop
+#dr true when the drop should be given
+#dex if rollDrop(25):
+#dex 	drop a diamond at player
+function rollDrop(chance: number) :: boolean:
+	chance of {_chance}%:
+		return true
+	return false
+
+# @deprecated use welcomeKit() instead, which can announce the kit
+function oldKit(p: player):
+	welcomeKit({_p})
+
+# Gives yourself the starter kit. Usable once every {@cooldown}.
+command /kit:
+	cooldown: {@cooldown}
+	trigger:
+		# Hover welcomeKit: the description, both parameters with their types,
+		# the return value, since and the example. Hover oldKit: struck
+		# through, and the card opens with what to use instead.
+		welcomeKit(player, true)
+		oldKit(player)
+		# Type `welcomeKit(` on a new line: each argument's hint carries its
+		# @param text. After {@prefix} below, an inlay hint shows its value.
+		if rollDrop(10) is true:
+			send "{@prefix} Lucky you." to player

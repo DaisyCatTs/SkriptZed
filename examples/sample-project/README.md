@@ -10,6 +10,7 @@ reflect.sk    skript-reflect's Java interop and custom syntax in a realistic scr
 classysk.sk   a ClassySK class: fields, methods, self:: and new instance
 equipment.sk  named arguments, a ClassySK static method and SkBee's switch/case
 features.sk   a guided walkthrough of everything new since 0.2.5
+docs.sk       doc comments in both styles, and option values shown inline
 TESTING.md    a numbered checklist for testing all of it by hand
 ```
 

@@ -112,11 +112,18 @@ As **warnings**:
 | `requires-addon` | The line matches an addon that is not installed, named with its minimum version. Only when a `plugins/` directory was found | – |
 | `event-not-cancellable` | `cancel event` in an event Skript's `docs.json` marks as not cancellable. Skript refuses it at load time, but the verdict rests on that flag, so it is a warning. Skipped inside addon sections, which may run their body in another event | Remove `cancel event` |
 | `local-never-set` | A `{_local}` read in a trigger that never sets it, so it is always empty there. Can be turned off with `localVariableDiagnostics` | – |
+| `no-event-value` | `player`, `event-player`, `attacker` and the like where the trigger has none: in a function, an `every …` event, or a core event whose documented values cannot supply it. Skript's own wording ("There's no player in a function event"). Skipped in commands, ClassySK methods, addon events and slots a literal could fill. `eventValueDiagnostics` turns it off | – |
+| `empty-section` | A section header with nothing under it, or only comments. Skript's config reader warns "Empty configuration section!" for every section, `options:` and `variables:` included | – |
+| `unreachable-code` | A statement after `stop`, `exit` or a `return` that always runs. Faded, with Skript's wording. Not reported after `stop if …` or where the script suppresses Skript's own warning | – |
+| `unknown-event` | An `on …` header nothing explains, one or two letters away from a known event. Only once every detected addon's syntax has loaded. `unknownEventDiagnostics` turns it off | Change to the event it resembles |
+| `duplicate-function` / `duplicate-command` / `duplicate-syntax` | The same function signature, command or skript-reflect pattern declared in two scripts; links to the other one | – |
+| `requires-newer-skript` | **Off by default** (`newerSyntaxDiagnostics`). Syntax newer than the Skript version read from `Skript.jar` or `skriptVersion`. Off because `docs.json` dates some rewritten syntax later than the older form it still accepts | – |
 
 As **hints**:
 
 | Code | Meaning |
 |---|---|
+| `doc-unknown-param` | An `@param` in a doc comment that names no parameter of the function |
 | `local-never-read` | A `{_local}` set but never read in its trigger. Tagged as unnecessary, so Zed shows it faded, like dead code. Can be turned off with `localVariableDiagnostics` |
 | `unknown-syntax` | **Off by default.** Any addon can register syntax this server has never seen, so switching it on by default would flag most lines of most scripts on any real server. Turn it on only if your scripts use no addons, or you supply every addon's syntax through `customSyntaxPaths` |
 

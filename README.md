@@ -191,6 +191,9 @@ wrong type is ignored on its own, and the server tells you which.
 | `unknownSyntaxDiagnostics` | `false` | Report lines matching no known syntax. Read [below](#three-things-that-are-not-what-you-expect) before enabling |
 | `deprecatedSyntaxDiagnostics` | `true` | Warn on syntax upstream has deprecated |
 | `localVariableDiagnostics` | `true` | Warn on a `{_local}` read but never set in its trigger, and fade one set but never read. The checks only fire when nothing in the trigger could explain the variable, but they are the ones most likely to be unwanted |
+| `eventValueDiagnostics` | `true` | Warn on `player`, `attacker` and other event values used where the trigger has none, such as a function or an `every …` event |
+| `unknownEventDiagnostics` | `true` | Warn on an `on …` header that matches no event but is a typo away from one, with a fix |
+| `newerSyntaxDiagnostics` | `false` | Warn on syntax newer than your server's Skript version. Off because Skript's docs date some rewritten syntax wrongly |
 | `formatBlankLines` | `true` | Let the formatter put one blank line under a multi-line structure that runs straight into the next. It never removes a blank line |
 | `analyzer.enabled` | on when `analyzer.jar` is set | Check each saved script with [SkAnalyzer](#checking-against-real-skript-skanalyzer). Set `false` to pause it without removing the jar path |
 | `analyzer.jar` | – | Path to the SkAnalyzer shell jar. Setting it turns the analyzer on |
@@ -244,6 +247,7 @@ applies at once. These are separate from Zed's own settings in
 | `callHierarchy` | Incoming and outgoing calls |
 | `symbols` | The outline and workspace symbol search |
 | `diagnostics` | Every check the server makes itself. SkAnalyzer and RCON findings follow their own settings |
+| `projectDiagnostics` | Unknown functions, wrong argument counts and duplicates in scripts you do not have open, rechecked when the project changes |
 
 To use a language server you built or installed yourself:
 

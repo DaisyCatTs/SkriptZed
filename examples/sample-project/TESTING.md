@@ -317,3 +317,31 @@ replaces the startup options, so without it the addons stop being detected.
     answer names Skript's *Action Bar* effect. Remove the setting afterwards:
     nothing from this extension starts it otherwise.
 
+
+## Doc comments
+
+`docs.sk` documents three functions and a command, in both comment styles.
+
+57. **Hover.** Hover `welcomeKit` on line 63: the signature, then *Gives a
+    player the starter kit and tells them about it.*, a **Parameters** list
+    with `p: player` and `loud: boolean` and their text (no `amount`), the
+    return value beside `boolean`, **Since** 1.2 and the example as code.
+    Hovering the declaration's name on line 35 shows the same card. Hover
+    `rollDrop` on line 66: the `#d` lines render the same way.
+58. **Deprecation.** `oldKit` on line 64 is struck through; its hint reads
+    *deprecated: use welcomeKit() instead, which can announce the kit*, and
+    its hover card opens with **Deprecated:**. Set
+    `"deprecatedSyntaxDiagnostics": false` in a `settings` block as in step
+    38: the strikethrough goes and the hover stays. Remove the setting.
+59. **Stale `@param`.** `amount` on line 29 has a hint, *`@param amount`
+    names no parameter of `welcomeKit`*. These two hints are the only
+    diagnostics in the file.
+60. **Argument hints and completion.** On a new line under line 64, type
+    `welcomeKit(`: the popup shows the description and return value, and the
+    `p` parameter carries *the player who receives the kit*. Type `player, `:
+    `loud` is highlighted with its own text. Delete the line, type `welcomeK`
+    and open the documentation beside the completion: the same card. Undo.
+61. **Option values.** On line 68, `{@prefix}` is followed by an inlay hint
+    `= "&8[&6Kits&8]&r"`; hovering the hint names the option and its line.
+    `{@cooldown}` on line 58 shows `= "10 minutes"`. With `"inlayHints":
+    false` under `features`, neither appears.
